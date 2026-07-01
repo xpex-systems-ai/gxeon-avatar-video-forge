@@ -28,7 +28,7 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
@@ -83,9 +83,9 @@ def _sync_chatterbox_config_from_session_state():
         )
         or ""
     ).strip()
-    config.chatterbox["api_key"] = st.session_state.get(
-        "chatterbox_api_key_input", config.chatterbox.get("api_key", "")
-    )
+    chatterbox_api_key = st.session_state.get("chatterbox_api_key_input", "")
+    if chatterbox_api_key:
+        config.chatterbox["api_key"] = chatterbox_api_key
     config.chatterbox["model_id"] = (
         st.session_state.get(
             "chatterbox_model_input",
@@ -151,7 +151,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON · based on MoneyPrinterTurbo (MIT)")
 
 with lang_col:
     display_languages = []
@@ -1083,16 +1084,18 @@ with middle_panel:
             # Read from session_state first so the API key is available before
             # the Play Voice button runs (which is earlier in the script than
             # the API key text_input widget).
-            saved_elevenlabs_api_key = st.session_state.get(
-                "elevenlabs_api_key_input",
-                config.elevenlabs.get("api_key", ""),
+            elevenlabs_session_api_key = st.session_state.get(
+                "elevenlabs_api_key_input", ""
             )
-            if saved_elevenlabs_api_key:
-                config.elevenlabs["api_key"] = saved_elevenlabs_api_key
-            cache_key = f"elevenlabs_voices_{saved_elevenlabs_api_key}"
+            effective_elevenlabs_api_key = (
+                elevenlabs_session_api_key or config.elevenlabs.get("api_key", "")
+            )
+            if elevenlabs_session_api_key:
+                config.elevenlabs["api_key"] = elevenlabs_session_api_key
+            cache_key = f"elevenlabs_voices_{effective_elevenlabs_api_key}"
             if cache_key not in st.session_state:
                 st.session_state[cache_key] = voice.get_elevenlabs_voices(
-                    saved_elevenlabs_api_key
+                    effective_elevenlabs_api_key
                 )
             filtered_voices = st.session_state[cache_key]
         elif selected_tts_server == "chatterbox":
@@ -1312,9 +1315,12 @@ with middle_panel:
 
             elevenlabs_api_key = st.text_input(
                 tr("ElevenLabs API Key"),
-                value=saved_elevenlabs_api_key,
+                value="",
                 type="password",
                 key="elevenlabs_api_key_input",
+                placeholder=(
+                    "Saved key configured" if saved_elevenlabs_api_key else ""
+                ),
             )
 
             _elevenlabs_models = [
@@ -1341,12 +1347,13 @@ with middle_panel:
                 "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
             )
 
-            if elevenlabs_api_key != saved_elevenlabs_api_key:
+            if elevenlabs_api_key and elevenlabs_api_key != saved_elevenlabs_api_key:
                 for k in list(st.session_state.keys()):
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
 
-            config.elevenlabs["api_key"] = elevenlabs_api_key
+            if elevenlabs_api_key:
+                config.elevenlabs["api_key"] = elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1360,13 +1367,18 @@ with middle_panel:
             )
             config.chatterbox["base_url"] = (chatterbox_base_url or "").strip()
 
+            saved_chatterbox_api_key = config.chatterbox.get("api_key", "")
             chatterbox_api_key = st.text_input(
                 tr("Chatterbox API Key"),
-                value=config.chatterbox.get("api_key", ""),
+                value="",
                 type="password",
                 key="chatterbox_api_key_input",
+                placeholder=(
+                    "Saved key configured" if saved_chatterbox_api_key else ""
+                ),
             )
-            config.chatterbox["api_key"] = chatterbox_api_key
+            if chatterbox_api_key:
+                config.chatterbox["api_key"] = chatterbox_api_key
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
@@ -1596,7 +1608,7 @@ with right_panel:
             else:
                 st.info(tr("No Pexels API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
+            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key", type="password")
             if st.button(tr("Add Pexels API Key")):
                 if new_key and new_key not in config.app["pexels_api_keys"]:
                     config.app["pexels_api_keys"].append(new_key)
@@ -1626,7 +1638,7 @@ with right_panel:
             else:
                 st.info(tr("No Pixabay API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
+            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key", type="password")
             if st.button(tr("Add Pixabay API Key")):
                 if new_key and new_key not in config.app["pixabay_api_keys"]:
                     config.app["pixabay_api_keys"].append(new_key)
@@ -1662,7 +1674,7 @@ with right_panel:
             else:
                 st.info(tr("No Coverr API Keys currently"))
 
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
+            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key", type="password")
             if st.button(tr("Add Coverr API Key")):
                 if new_key and new_key not in config.app["coverr_api_keys"]:
                     config.app["coverr_api_keys"].append(new_key)
