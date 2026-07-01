@@ -27,7 +27,7 @@ Railway runtime variables such as `RAILWAY_ENVIRONMENT`, `RAILWAY_PROJECT_ID`, o
 
 CORS no longer falls back to a wildcard in Railway or production-like runtimes. If `CORS_ALLOWED_ORIGINS` is empty while `ENVIRONMENT=production`, `ENVIRONMENT=railway`, `ENVIRONMENT=prod`, or Railway runtime variables are present, the API uses an empty CORS origin list instead of `*`.
 
-Wildcard CORS is only for explicit local development outside Railway/production-like runtime detection.
+If `CORS_ALLOWED_ORIGINS` contains `*` in Railway or production-like runtimes, wildcard entries are ignored and only non-wildcard explicit origins are kept. If no explicit origins remain, the API returns an empty CORS origin list. Wildcard CORS is only for explicit local development outside Railway/production-like runtime detection.
 
 ## Streamlit WebUI private gate
 

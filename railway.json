@@ -1,0 +1,8 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "deploy": {
+    "startCommand": "streamlit run ./webui/Main.py --server.address=0.0.0.0 --server.port=$PORT --browser.serverAddress=127.0.0.1 --server.enableCORS=True --browser.gatherUsageStats=False --server.showEmailPrompt=False",
+    "healthcheckPath": "/_stcore/health",
+    "healthcheckTimeout": 300
+  }
+}
