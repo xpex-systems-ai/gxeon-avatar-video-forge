@@ -28,7 +28,7 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
@@ -151,7 +151,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON · based on MoneyPrinterTurbo (MIT)")
 
 with lang_col:
     display_languages = []
@@ -1607,7 +1608,7 @@ with right_panel:
             else:
                 st.info(tr("No Pexels API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
+            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key", type="password")
             if st.button(tr("Add Pexels API Key")):
                 if new_key and new_key not in config.app["pexels_api_keys"]:
                     config.app["pexels_api_keys"].append(new_key)
@@ -1637,7 +1638,7 @@ with right_panel:
             else:
                 st.info(tr("No Pixabay API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
+            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key", type="password")
             if st.button(tr("Add Pixabay API Key")):
                 if new_key and new_key not in config.app["pixabay_api_keys"]:
                     config.app["pixabay_api_keys"].append(new_key)
@@ -1673,7 +1674,7 @@ with right_panel:
             else:
                 st.info(tr("No Coverr API Keys currently"))
 
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
+            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key", type="password")
             if st.button(tr("Add Coverr API Key")):
                 if new_key and new_key not in config.app["coverr_api_keys"]:
                     config.app["coverr_api_keys"].append(new_key)

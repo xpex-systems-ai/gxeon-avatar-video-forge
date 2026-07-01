@@ -5,15 +5,54 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.config import config
 from app.models.exception import HttpException
+from app.controllers import base
 from app.router import root_api_router
 from app.utils import utils
 
+
+
+def _is_production_like_runtime() -> bool:
+    environment = os.getenv("ENVIRONMENT", "").lower()
+    railway_environment = os.getenv("RAILWAY_ENVIRONMENT", "")
+    railway_ids = (os.getenv("RAILWAY_PROJECT_ID"), os.getenv("RAILWAY_SERVICE_ID"))
+    return environment in {"production", "prod", "staging"} or bool(railway_environment) or any(railway_ids)
+
+
+def _cors_origins() -> list[str]:
+    cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [origin.strip() for origin in cors_allowed_origins_str.split(",") if origin.strip()]
+    if origins:
+        return origins
+    if _is_production_like_runtime():
+        logger.warning("CORS_ALLOWED_ORIGINS is empty in production-like runtime; wildcard CORS disabled")
+        return []
+    return ["*"]
+
+
+class TaskMediaTokenMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not scope.get("path", "").startswith("/tasks"):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        expected_token = base.get_expected_api_key()
+        supplied_token = base.get_api_key(request) or request.query_params.get("token")
+        if expected_token and supplied_token != expected_token:
+            response = Response(status_code=401)
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 def exception_handler(request: Request, e: HttpException):
     return JSONResponse(
@@ -53,8 +92,7 @@ def get_application() -> FastAPI:
 app = get_application()
 
 # Configures the CORS middleware for the FastAPI app
-cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+origins = _cors_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -62,6 +100,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(TaskMediaTokenMiddleware)
 
 task_dir = utils.task_dir()
 app.mount(
