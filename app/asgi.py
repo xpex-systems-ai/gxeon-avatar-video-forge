@@ -52,9 +52,23 @@ def get_application() -> FastAPI:
 
 app = get_application()
 
-# Configures the CORS middleware for the FastAPI app
+# Configures the CORS middleware for the FastAPI app.
+# Railway/production deployments must never expose wildcard CORS by default;
+# only explicit local development may fall back to ["*"].
 cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+environment = os.getenv("ENVIRONMENT", "").strip().lower()
+is_local_development = environment in {"", "development", "dev", "local"}
+is_production_like = (
+    environment in {"production", "railway"}
+    or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+    or bool(os.getenv("RAILWAY_PROJECT_ID"))
+    or bool(os.getenv("RAILWAY_SERVICE_ID"))
+)
+origins = [
+    origin.strip() for origin in cors_allowed_origins_str.split(",") if origin.strip()
+]
+if not origins and is_local_development and not is_production_like:
+    origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
