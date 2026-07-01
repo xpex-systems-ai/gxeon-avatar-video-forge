@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.config import config
+from app.controllers import base
 from app.models.exception import HttpException
 from app.router import root_api_router
 from app.utils import utils
@@ -54,7 +55,9 @@ app = get_application()
 
 # Configures the CORS middleware for the FastAPI app
 cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+origins = [origin.strip() for origin in cors_allowed_origins_str.split(",") if origin.strip()]
+if not origins and os.getenv("ENVIRONMENT", "").lower() not in {"production", "railway"}:
+    origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -62,6 +65,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"status": "ok"}
+
+
+@app.middleware("http")
+async def protect_task_media(request: Request, call_next):
+    if request.url.path.startswith("/tasks"):
+        try:
+            base.verify_token(request)
+        except HttpException as exc:
+            return exception_handler(request, exc)
+    return await call_next(request)
 
 task_dir = utils.task_dir()
 app.mount(
