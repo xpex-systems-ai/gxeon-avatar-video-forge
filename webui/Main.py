@@ -28,16 +28,16 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
+        "About": "# Cenara\nSimply provide a topic or keyword for a video, and it will "
         "automatically generate the video copy, video materials, video subtitles, "
         "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "video.\n\nPowered by GXEON. Based on MoneyPrinterTurbo (MIT): https://github.com/harry0703/MoneyPrinterTurbo",
     },
 )
 
@@ -83,9 +83,11 @@ def _sync_chatterbox_config_from_session_state():
         )
         or ""
     ).strip()
-    config.chatterbox["api_key"] = st.session_state.get(
+    chatterbox_api_key = st.session_state.get(
         "chatterbox_api_key_input", config.chatterbox.get("api_key", "")
     )
+    if chatterbox_api_key:
+        config.chatterbox["api_key"] = chatterbox_api_key
     config.chatterbox["model_id"] = (
         st.session_state.get(
             "chatterbox_model_input",
@@ -100,6 +102,46 @@ def _sync_chatterbox_config_from_session_state():
         )
     )
 
+
+
+
+def _mask_secret(secret: str) -> str:
+    secret = str(secret or "")
+    if len(secret) <= 8:
+        return "••••" if secret else ""
+    return f"{secret[:4]}…{secret[-4:]}"
+
+
+def _is_private_operator_gate_required() -> bool:
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    return (
+        environment in {"production", "railway"}
+        or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+        or bool(os.getenv("RAILWAY_PROJECT_ID"))
+        or bool(os.getenv("RAILWAY_SERVICE_ID"))
+    )
+
+
+def _expected_operator_token() -> str:
+    return os.getenv("GX1_ACCESS_TOKEN") or config.app.get("api_key", "")
+
+
+def _require_private_operator_gate():
+    if not _is_private_operator_gate_required():
+        return
+    expected_token = _expected_operator_token()
+    if not expected_token:
+        st.error("GX1_ACCESS_TOKEN is required before exposing Cenara on Railway.")
+        st.stop()
+    submitted_token = st.text_input(
+        "Private operator token",
+        type="password",
+        key="cenara_private_operator_token",
+        help="Use the GX1_ACCESS_TOKEN configured in Railway.",
+    )
+    if submitted_token != expected_token:
+        st.info("Enter the private Cenara operator token to continue.")
+        st.stop()
 
 def _detect_audio_mime(audio_file: str, audio_bytes: bytes) -> str:
     # 有些 OpenAI-compatible TTS 服务，例如 travisvn/chatterbox-tts-api，
@@ -151,7 +193,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON")
 
 with lang_col:
     display_languages = []
@@ -172,6 +215,8 @@ with lang_col:
         code = selected_language.split(" - ")[0].strip()
         st.session_state["ui_language"] = code
         config.ui["language"] = code
+
+_require_private_operator_gate()
 
 support_locales = [
     "zh-CN",
@@ -1341,12 +1386,16 @@ with middle_panel:
                 "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
             )
 
-            if elevenlabs_api_key != saved_elevenlabs_api_key:
+            if (
+                elevenlabs_api_key
+                and elevenlabs_api_key != saved_elevenlabs_api_key
+            ):
                 for k in list(st.session_state.keys()):
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
-
-            config.elevenlabs["api_key"] = elevenlabs_api_key
+                config.elevenlabs["api_key"] = elevenlabs_api_key
+            elif not elevenlabs_api_key:
+                elevenlabs_api_key = saved_elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1366,7 +1415,8 @@ with middle_panel:
                 type="password",
                 key="chatterbox_api_key_input",
             )
-            config.chatterbox["api_key"] = chatterbox_api_key
+            if chatterbox_api_key:
+                config.chatterbox["api_key"] = chatterbox_api_key
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
@@ -1592,11 +1642,11 @@ with right_panel:
             if config.app["pexels_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["pexels_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_secret(key))
             else:
                 st.info(tr("No Pexels API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
+            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key", type="password")
             if st.button(tr("Add Pexels API Key")):
                 if new_key and new_key not in config.app["pexels_api_keys"]:
                     config.app["pexels_api_keys"].append(new_key)
@@ -1609,7 +1659,10 @@ with right_panel:
 
             if config.app["pexels_api_keys"]:
                 delete_key = st.selectbox(
-                    tr("Select Pexels API Key to delete"), config.app["pexels_api_keys"], key="pexels_delete_key"
+                    tr("Select Pexels API Key to delete"),
+                    config.app["pexels_api_keys"],
+                    format_func=_mask_secret,
+                    key="pexels_delete_key",
                 )
                 if st.button(tr("Delete Selected Pexels API Key")):
                     config.app["pexels_api_keys"].remove(delete_key)
@@ -1622,11 +1675,11 @@ with right_panel:
             if config.app["pixabay_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["pixabay_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_secret(key))
             else:
                 st.info(tr("No Pixabay API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
+            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key", type="password")
             if st.button(tr("Add Pixabay API Key")):
                 if new_key and new_key not in config.app["pixabay_api_keys"]:
                     config.app["pixabay_api_keys"].append(new_key)
@@ -1639,7 +1692,10 @@ with right_panel:
 
             if config.app["pixabay_api_keys"]:
                 delete_key = st.selectbox(
-                    tr("Select Pixabay API Key to delete"), config.app["pixabay_api_keys"], key="pixabay_delete_key"
+                    tr("Select Pixabay API Key to delete"),
+                    config.app["pixabay_api_keys"],
+                    format_func=_mask_secret,
+                    key="pixabay_delete_key",
                 )
                 if st.button(tr("Delete Selected Pixabay API Key")):
                     config.app["pixabay_api_keys"].remove(delete_key)
@@ -1658,11 +1714,11 @@ with right_panel:
             if config.app["coverr_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["coverr_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_secret(key))
             else:
                 st.info(tr("No Coverr API Keys currently"))
 
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
+            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key", type="password")
             if st.button(tr("Add Coverr API Key")):
                 if new_key and new_key not in config.app["coverr_api_keys"]:
                     config.app["coverr_api_keys"].append(new_key)
@@ -1675,7 +1731,10 @@ with right_panel:
 
             if config.app["coverr_api_keys"]:
                 delete_key = st.selectbox(
-                    tr("Select Coverr API Key to delete"), config.app["coverr_api_keys"], key="coverr_delete_key"
+                    tr("Select Coverr API Key to delete"),
+                    config.app["coverr_api_keys"],
+                    format_func=_mask_secret,
+                    key="coverr_delete_key",
                 )
                 if st.button(tr("Delete Selected Coverr API Key")):
                     config.app["coverr_api_keys"].remove(delete_key)

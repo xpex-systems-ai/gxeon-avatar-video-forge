@@ -6,10 +6,12 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.config import config
+from app.controllers import base
 from app.models.exception import HttpException
 from app.router import root_api_router
 from app.utils import utils
@@ -52,9 +54,42 @@ def get_application() -> FastAPI:
 
 app = get_application()
 
+def _is_production_like_runtime() -> bool:
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    return (
+        environment in {"production", "railway"}
+        or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+        or bool(os.getenv("RAILWAY_PROJECT_ID"))
+        or bool(os.getenv("RAILWAY_SERVICE_ID"))
+    )
+
+
+def _cors_allowed_origins() -> list[str]:
+    cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [origin.strip() for origin in cors_allowed_origins_str.split(",") if origin.strip()]
+    if origins:
+        return origins
+
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    if not _is_production_like_runtime() and environment in {"", "development", "local"}:
+        return ["*"]
+
+    logger.warning(
+        "CORS_ALLOWED_ORIGINS is empty in a production-like runtime; "
+        "using no allowed browser origins instead of wildcard"
+    )
+    return []
+
+
+class TaskMediaTokenMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/tasks"):
+            base.verify_token(request)
+        return await call_next(request)
+
+
 # Configures the CORS middleware for the FastAPI app
-cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+origins = _cors_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -62,6 +97,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TaskMediaTokenMiddleware)
 
 task_dir = utils.task_dir()
 app.mount(
