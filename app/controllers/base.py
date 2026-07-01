@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 
 from fastapi import Request
@@ -18,9 +19,25 @@ def get_api_key(request: Request):
     return api_key
 
 
+def get_expected_token():
+    return (
+        os.getenv("GX1_ACCESS_TOKEN")
+        or str(config.app.get("api_key", "") or "")
+    ).strip()
+
+
+def get_bearer_token(request: Request):
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return ""
+
+
 def verify_token(request: Request):
-    token = get_api_key(request)
-    if token != config.app.get("api_key", ""):
+    expected_token = get_expected_token()
+    supplied_token = get_bearer_token(request) or (get_api_key(request) or "").strip()
+    if not expected_token or not supplied_token or supplied_token != expected_token:
         request_id = get_task_id(request)
         request_url = request.url
         user_agent = request.headers.get("user-agent")

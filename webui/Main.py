@@ -28,7 +28,7 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
@@ -60,6 +60,50 @@ system_locale = utils.get_system_locale()
 DEFAULT_CHATTERBOX_BASE_URL = "http://127.0.0.1:4123/v1"
 DEFAULT_CHATTERBOX_MODEL = "chatterbox"
 DEFAULT_CHATTERBOX_VOICES = ["default-Female"]
+PRODUCTION_ENVIRONMENTS = {"production", "railway", "prod"}
+RAILWAY_RUNTIME_ENV_VARS = (
+    "RAILWAY_ENVIRONMENT",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+)
+
+
+def _is_private_runtime() -> bool:
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    return environment in PRODUCTION_ENVIRONMENTS or any(
+        os.getenv(name) for name in RAILWAY_RUNTIME_ENV_VARS
+    )
+
+
+def _expected_operator_token() -> str:
+    return (
+        os.getenv("GX1_ACCESS_TOKEN")
+        or str(config.app.get("api_key", "") or "")
+    ).strip()
+
+
+def _require_private_operator_gate() -> None:
+    if not _is_private_runtime():
+        return
+
+    expected_token = _expected_operator_token()
+    if not expected_token:
+        st.error(
+            "Private Cenara deployment is closed: configure GX1_ACCESS_TOKEN "
+            "before exposing the Railway service."
+        )
+        st.stop()
+
+    submitted_token = st.text_input(
+        "Private operator access",
+        value="",
+        type="password",
+        placeholder="Enter operator token",
+        key="private_operator_access_token",
+    ).strip()
+    if submitted_token != expected_token:
+        st.info("Private Cenara WebUI. Enter the operator token to continue.")
+        st.stop()
 
 
 def _parse_chatterbox_voices(voices):
@@ -83,9 +127,11 @@ def _sync_chatterbox_config_from_session_state():
         )
         or ""
     ).strip()
-    config.chatterbox["api_key"] = st.session_state.get(
-        "chatterbox_api_key_input", config.chatterbox.get("api_key", "")
-    )
+    chatterbox_api_key = str(
+        st.session_state.get("chatterbox_api_key_input", "") or ""
+    ).strip()
+    if chatterbox_api_key:
+        config.chatterbox["api_key"] = chatterbox_api_key
     config.chatterbox["model_id"] = (
         st.session_state.get(
             "chatterbox_model_input",
@@ -151,7 +197,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON · Based on MoneyPrinterTurbo (MIT)")
 
 with lang_col:
     display_languages = []
@@ -172,6 +219,9 @@ with lang_col:
         code = selected_language.split(" - ")[0].strip()
         st.session_state["ui_language"] = code
         config.ui["language"] = code
+
+_require_private_operator_gate()
+
 
 support_locales = [
     "zh-CN",
@@ -1083,16 +1133,21 @@ with middle_panel:
             # Read from session_state first so the API key is available before
             # the Play Voice button runs (which is earlier in the script than
             # the API key text_input widget).
-            saved_elevenlabs_api_key = st.session_state.get(
-                "elevenlabs_api_key_input",
-                config.elevenlabs.get("api_key", ""),
+            submitted_elevenlabs_api_key = str(
+                st.session_state.get("elevenlabs_api_key_input", "") or ""
+            ).strip()
+            saved_elevenlabs_api_key = str(
+                config.elevenlabs.get("api_key", "") or ""
+            ).strip()
+            effective_elevenlabs_api_key = (
+                submitted_elevenlabs_api_key or saved_elevenlabs_api_key
             )
-            if saved_elevenlabs_api_key:
-                config.elevenlabs["api_key"] = saved_elevenlabs_api_key
-            cache_key = f"elevenlabs_voices_{saved_elevenlabs_api_key}"
+            if submitted_elevenlabs_api_key:
+                config.elevenlabs["api_key"] = submitted_elevenlabs_api_key
+            cache_key = f"elevenlabs_voices_{effective_elevenlabs_api_key}"
             if cache_key not in st.session_state:
                 st.session_state[cache_key] = voice.get_elevenlabs_voices(
-                    saved_elevenlabs_api_key
+                    effective_elevenlabs_api_key
                 )
             filtered_voices = st.session_state[cache_key]
         elif selected_tts_server == "chatterbox":
@@ -1312,9 +1367,12 @@ with middle_panel:
 
             elevenlabs_api_key = st.text_input(
                 tr("ElevenLabs API Key"),
-                value=saved_elevenlabs_api_key,
+                value="",
                 type="password",
                 key="elevenlabs_api_key_input",
+                placeholder=(
+                    "Saved key configured" if saved_elevenlabs_api_key else ""
+                ),
             )
 
             _elevenlabs_models = [
@@ -1341,12 +1399,15 @@ with middle_panel:
                 "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
             )
 
-            if elevenlabs_api_key != saved_elevenlabs_api_key:
+            submitted_elevenlabs_api_key = (elevenlabs_api_key or "").strip()
+            if (
+                submitted_elevenlabs_api_key
+                and submitted_elevenlabs_api_key != saved_elevenlabs_api_key
+            ):
                 for k in list(st.session_state.keys()):
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
-
-            config.elevenlabs["api_key"] = elevenlabs_api_key
+                config.elevenlabs["api_key"] = submitted_elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1362,11 +1423,15 @@ with middle_panel:
 
             chatterbox_api_key = st.text_input(
                 tr("Chatterbox API Key"),
-                value=config.chatterbox.get("api_key", ""),
+                value="",
                 type="password",
                 key="chatterbox_api_key_input",
+                placeholder=(
+                    "Saved key configured" if config.chatterbox.get("api_key") else ""
+                ),
             )
-            config.chatterbox["api_key"] = chatterbox_api_key
+            if (chatterbox_api_key or "").strip():
+                config.chatterbox["api_key"] = chatterbox_api_key.strip()
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
