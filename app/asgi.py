@@ -52,9 +52,35 @@ def get_application() -> FastAPI:
 
 app = get_application()
 
-# Configures the CORS middleware for the FastAPI app
-cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+# Configures the CORS middleware for the FastAPI app. Railway/production
+# runtimes must fail closed unless CORS_ALLOWED_ORIGINS is explicitly set.
+def _is_production_like_runtime() -> bool:
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    return environment in {"production", "railway", "prod"} or any(
+        os.getenv(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+        )
+    )
+
+
+def _get_cors_allowed_origins() -> list[str]:
+    cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [
+        origin.strip()
+        for origin in cors_allowed_origins_str.split(",")
+        if origin.strip()
+    ]
+    if origins:
+        return origins
+    if _is_production_like_runtime():
+        return []
+    return ["*"]
+
+
+origins = _get_cors_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
