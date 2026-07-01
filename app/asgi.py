@@ -31,6 +31,38 @@ def validation_exception_handler(request: Request, e: RequestValidationError):
     )
 
 
+def _is_production() -> bool:
+    return os.getenv("ENVIRONMENT", "").lower() in {"production", "prod", "railway"} or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if _is_production() and (not origins or "*" in origins):
+        raise RuntimeError("CORS_ALLOWED_ORIGINS must be explicit in Railway/production; wildcard is not allowed")
+    return origins or ["*"]
+
+
+class TaskMediaTokenMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path", "").startswith("/tasks"):
+            headers = {key.decode("latin1").lower(): value.decode("latin1") for key, value in scope.get("headers", [])}
+            auth_header = headers.get("authorization", "")
+            token = None
+            if auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+            token = token or headers.get("x-api-key")
+            expected = os.getenv("GX1_ACCESS_TOKEN") or config.app.get("api_key", "")
+            if not expected or token != expected:
+                response = JSONResponse({"message": "unauthorized task media access"}, status_code=401)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def get_application() -> FastAPI:
     """Initialize FastAPI application.
 
@@ -53,8 +85,8 @@ def get_application() -> FastAPI:
 app = get_application()
 
 # Configures the CORS middleware for the FastAPI app
-cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+origins = _cors_origins()
+app.add_middleware(TaskMediaTokenMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

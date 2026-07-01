@@ -51,6 +51,33 @@ h1 {
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
 
+
+def _expected_operator_token() -> str:
+    return os.getenv("GX1_ACCESS_TOKEN") or config.app.get("api_key", "")
+
+
+def require_private_operator_token() -> None:
+    expected_token = _expected_operator_token()
+    if not expected_token:
+        st.error("Private operator token is not configured. Set GX1_ACCESS_TOKEN before exposing this app.")
+        st.stop()
+
+    if st.session_state.get("cenara_private_operator_authenticated"):
+        return
+
+    st.title("Cenara Private MVP")
+    st.info("Enter the private operator token to continue.")
+    supplied_token = st.text_input("Private operator token", type="password", key="cenara_private_operator_token")
+    if st.button("Unlock private operator console", type="primary"):
+        if supplied_token == expected_token:
+            st.session_state["cenara_private_operator_authenticated"] = True
+            st.rerun()
+        st.error("Invalid private operator token.")
+    st.stop()
+
+
+require_private_operator_token()
+
 # 定义资源目录
 font_dir = os.path.join(root_dir, "resource", "fonts")
 song_dir = os.path.join(root_dir, "resource", "songs")
@@ -1312,8 +1339,9 @@ with middle_panel:
 
             elevenlabs_api_key = st.text_input(
                 tr("ElevenLabs API Key"),
-                value=saved_elevenlabs_api_key,
+                value="",
                 type="password",
+                placeholder="Enter ElevenLabs API key for this session",
                 key="elevenlabs_api_key_input",
             )
 
@@ -1341,12 +1369,12 @@ with middle_panel:
                 "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
             )
 
-            if elevenlabs_api_key != saved_elevenlabs_api_key:
+            if elevenlabs_api_key and elevenlabs_api_key != saved_elevenlabs_api_key:
                 for k in list(st.session_state.keys()):
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
 
-            config.elevenlabs["api_key"] = elevenlabs_api_key
+            config.elevenlabs["api_key"] = elevenlabs_api_key or saved_elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1362,11 +1390,12 @@ with middle_panel:
 
             chatterbox_api_key = st.text_input(
                 tr("Chatterbox API Key"),
-                value=config.chatterbox.get("api_key", ""),
+                value="",
                 type="password",
+                placeholder="Optional Chatterbox API key for this session",
                 key="chatterbox_api_key_input",
             )
-            config.chatterbox["api_key"] = chatterbox_api_key
+            config.chatterbox["api_key"] = chatterbox_api_key or config.chatterbox.get("api_key", "")
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
