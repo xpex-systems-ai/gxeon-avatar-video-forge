@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 
 from fastapi import Request
@@ -14,18 +15,34 @@ def get_task_id(request: Request):
 
 
 def get_api_key(request: Request):
-    api_key = request.headers.get("x-api-key")
-    return api_key
+    authorization = request.headers.get("authorization", "")
+    scheme, _, bearer_token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and bearer_token.strip():
+        return bearer_token.strip()
+
+    return request.headers.get("x-api-key", "").strip()
+
+
+def get_expected_token():
+    return (os.getenv("GX1_ACCESS_TOKEN") or config.app.get("api_key", "") or "").strip()
+
+
+def _raise_unauthorized(request: Request, message: str = "unauthorized"):
+    raise HttpException(
+        task_id=get_task_id(request),
+        status_code=401,
+        message=message,
+    )
 
 
 def verify_token(request: Request):
+    expected_token = get_expected_token()
+    if not expected_token:
+        _raise_unauthorized(request, "operator token is not configured")
+
     token = get_api_key(request)
-    if token != config.app.get("api_key", ""):
-        request_id = get_task_id(request)
-        request_url = request.url
-        user_agent = request.headers.get("user-agent")
-        raise HttpException(
-            task_id=request_id,
-            status_code=401,
-            message=f"invalid token: {request_url}, {user_agent}",
-        )
+    if not token:
+        _raise_unauthorized(request)
+
+    if token != expected_token:
+        _raise_unauthorized(request)
