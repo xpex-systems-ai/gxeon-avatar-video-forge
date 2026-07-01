@@ -1,3 +1,4 @@
+import os
 from uuid import uuid4
 
 from fastapi import Request
@@ -18,9 +19,13 @@ def get_api_key(request: Request):
     return api_key
 
 
+def _expected_operator_token():
+    return os.getenv("GX1_ACCESS_TOKEN") or config.app.get("api_key", "")
+
+
 def verify_token(request: Request):
     token = get_api_key(request)
-    if token != config.app.get("api_key", ""):
+    if token != _expected_operator_token():
         request_id = get_task_id(request)
         request_url = request.url
         user_agent = request.headers.get("user-agent")
