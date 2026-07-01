@@ -28,16 +28,16 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
+        "About": "# Cenara\nPrivate operator MVP for creating avatar-style short videos. Provide a topic or keyword and it will "
         "automatically generate the video copy, video materials, video subtitles, "
         "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "video.\n\nPowered by GXEON; based on MoneyPrinterTurbo (MIT).",
     },
 )
 
@@ -50,6 +50,46 @@ h1 {
 </style>
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
+
+
+def _is_private_runtime() -> bool:
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID")) or os.getenv(
+        "ENVIRONMENT", ""
+    ).lower() in {"prod", "production"}
+
+
+def _operator_token() -> str:
+    return os.getenv("GX1_ACCESS_TOKEN", "") or str(config.app.get("api_key", "") or "")
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "••••"
+    return f"{value[:2]}••••{value[-2:]}"
+
+
+def _private_gate() -> None:
+    if not _is_private_runtime():
+        return
+    expected_token = _operator_token()
+    if not expected_token:
+        st.error("Cenara private mode is enabled, but GX1_ACCESS_TOKEN is not configured.")
+        st.stop()
+    submitted_token = st.text_input(
+        "Cenara operator token",
+        type="password",
+        help="Use the private operator token configured as GX1_ACCESS_TOKEN.",
+    )
+    if submitted_token != expected_token:
+        st.warning("Enter the private operator token to unlock Cenara controls.")
+        st.stop()
+
+
+_private_gate()
+
+st.caption("Powered by GXEON")
 
 # 定义资源目录
 font_dir = os.path.join(root_dir, "resource", "fonts")
@@ -151,7 +191,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON")
 
 with lang_col:
     display_languages = []
@@ -670,8 +711,10 @@ if not config.app.get("hide_config", False):
                 st.info(tips)
 
             st_llm_api_key = st.text_input(
-                tr("API Key"), value=llm_api_key, type="password"
+                tr("API Key"), value="", type="password", placeholder=_mask_secret(llm_api_key)
             )
+            if llm_api_key:
+                st.caption(f"Saved API key: {_mask_secret(llm_api_key)}")
             st_llm_base_url = st.text_input(tr("Base Url"), value=llm_base_url)
             st_llm_model_name = ""
             if llm_provider != "ernie":
@@ -727,9 +770,10 @@ if not config.app.get("hide_config", False):
                 config.app[f"{llm_provider}_model_name"] = st_llm_model_name
             if llm_provider == "ernie":
                 st_llm_secret_key = st.text_input(
-                    tr("Secret Key"), value=llm_secret_key, type="password"
+                    tr("Secret Key"), value="", type="password", placeholder=_mask_secret(llm_secret_key)
                 )
-                config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
+                if st_llm_secret_key:
+                    config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
 
             if llm_provider == "cloudflare":
                 st_llm_account_id = st.text_input(
@@ -757,19 +801,19 @@ if not config.app.get("hide_config", False):
 
             pexels_api_key = get_keys_from_config("pexels_api_keys")
             pexels_api_key = st.text_input(
-                tr("Pexels API Key"), value=pexels_api_key, type="password"
+                tr("Pexels API Key"), value="", type="password", placeholder=_mask_secret(pexels_api_key)
             )
             save_keys_to_config("pexels_api_keys", pexels_api_key)
 
             pixabay_api_key = get_keys_from_config("pixabay_api_keys")
             pixabay_api_key = st.text_input(
-                tr("Pixabay API Key"), value=pixabay_api_key, type="password"
+                tr("Pixabay API Key"), value="", type="password", placeholder=_mask_secret(pixabay_api_key)
             )
             save_keys_to_config("pixabay_api_keys", pixabay_api_key)
 
             coverr_api_key = get_keys_from_config("coverr_api_keys")
             coverr_api_key = st.text_input(
-                tr("Coverr API Key"), value=coverr_api_key, type="password"
+                tr("Coverr API Key"), value="", type="password", placeholder=_mask_secret(coverr_api_key)
             )
             save_keys_to_config("coverr_api_keys", coverr_api_key)
 
@@ -1245,12 +1289,14 @@ with middle_panel:
             )
             azure_speech_key = st.text_input(
                 tr("Speech Key"),
-                value=saved_azure_speech_key,
+                value="",
                 type="password",
+                placeholder=_mask_secret(saved_azure_speech_key),
                 key="azure_speech_key_input",
             )
             config.azure["speech_region"] = azure_speech_region
-            config.azure["speech_key"] = azure_speech_key
+            if azure_speech_key:
+                config.azure["speech_key"] = azure_speech_key
 
         # 当选择硅基流动时，显示API key输入框和说明信息
         if selected_tts_server == "siliconflow" or (
@@ -1260,8 +1306,9 @@ with middle_panel:
 
             siliconflow_api_key = st.text_input(
                 tr("SiliconFlow API Key"),
-                value=saved_siliconflow_api_key,
+                value="",
                 type="password",
+                placeholder=_mask_secret(saved_siliconflow_api_key),
                 key="siliconflow_api_key_input",
             )
 
@@ -1276,7 +1323,8 @@ with middle_panel:
                 + tr("Volume: Uses Speech Volume setting, default 1.0 maps to gain 0")
             )
 
-            config.siliconflow["api_key"] = siliconflow_api_key
+            if siliconflow_api_key:
+                config.siliconflow["api_key"] = siliconflow_api_key
 
         # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
         # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
@@ -1287,8 +1335,9 @@ with middle_panel:
 
             mimo_api_key = st.text_input(
                 tr("MiMo API Key"),
-                value=saved_mimo_api_key,
+                value="",
                 type="password",
+                placeholder=_mask_secret(saved_mimo_api_key),
                 key="mimo_tts_api_key_input",
             )
 
@@ -1302,7 +1351,8 @@ with middle_panel:
                 + tr("Speed and volume are currently handled by the provider defaults")
             )
 
-            config.app["mimo_api_key"] = mimo_api_key
+            if mimo_api_key:
+                config.app["mimo_api_key"] = mimo_api_key
 
         # ElevenLabs API key section
         if selected_tts_server == "elevenlabs" or (
@@ -1312,8 +1362,9 @@ with middle_panel:
 
             elevenlabs_api_key = st.text_input(
                 tr("ElevenLabs API Key"),
-                value=saved_elevenlabs_api_key,
+                value="",
                 type="password",
+                placeholder=_mask_secret(saved_elevenlabs_api_key),
                 key="elevenlabs_api_key_input",
             )
 
@@ -1346,7 +1397,8 @@ with middle_panel:
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
 
-            config.elevenlabs["api_key"] = elevenlabs_api_key
+            if elevenlabs_api_key:
+                config.elevenlabs["api_key"] = elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1362,11 +1414,13 @@ with middle_panel:
 
             chatterbox_api_key = st.text_input(
                 tr("Chatterbox API Key"),
-                value=config.chatterbox.get("api_key", ""),
+                value="",
                 type="password",
+                placeholder=_mask_secret(config.chatterbox.get("api_key", "")),
                 key="chatterbox_api_key_input",
             )
-            config.chatterbox["api_key"] = chatterbox_api_key
+            if chatterbox_api_key:
+                config.chatterbox["api_key"] = chatterbox_api_key
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
