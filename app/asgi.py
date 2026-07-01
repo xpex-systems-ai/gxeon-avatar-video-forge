@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -52,16 +52,38 @@ def get_application() -> FastAPI:
 
 app = get_application()
 
-# Configures the CORS middleware for the FastAPI app
-cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
-origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]
+
+def _cors_allowed_origins() -> list[str]:
+    origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    origins = [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+    if origins:
+        return origins
+
+    env_name = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).strip().lower()
+    if env_name in {"production", "prod", "railway"} or os.getenv(
+        "RAILWAY_ENVIRONMENT"
+    ):
+        logger.warning(
+            "CORS_ALLOWED_ORIGINS is empty in production; disabling public CORS origins"
+        )
+        return []
+
+    return ["http://localhost:8501", "http://127.0.0.1:8501"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return PlainTextResponse("ok")
+
 
 task_dir = utils.task_dir()
 app.mount(
