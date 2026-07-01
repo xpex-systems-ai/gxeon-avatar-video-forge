@@ -335,7 +335,11 @@ def upload_video_material_file(request: Request, file: UploadFile = File(...)):
     )
 
 @router.get("/stream/{file_path:path}")
-async def stream_video(request: Request, file_path: str):
+async def stream_video(
+    request: Request,
+    file_path: str,
+    _operator: bool = Depends(base.require_gx1_operator),
+):
     request_id = base.get_task_id(request)
     tasks_dir = utils.task_dir()
     video_path = _resolve_path_within_directory(tasks_dir, file_path, request_id)
@@ -378,7 +382,11 @@ async def stream_video(request: Request, file_path: str):
 
 
 @router.get("/download/{file_path:path}")
-async def download_video(request: Request, file_path: str):
+async def download_video(
+    request: Request,
+    file_path: str,
+    _operator: bool = Depends(base.require_gx1_operator),
+):
     """
     download video
     :param request: Request request
