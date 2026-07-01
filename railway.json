@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "streamlit run webui/Main.py --server.address 0.0.0.0 --server.port ${PORT:-8501} --server.headless true",
+    "startCommand": "/bin/sh -c \"streamlit run webui/Main.py --server.address 0.0.0.0 --server.port ${PORT:-8501} --server.headless true\"",
     "healthcheckPath": "/_stcore/health",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
