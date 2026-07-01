@@ -15,6 +15,7 @@ from app.controllers.manager.base_manager import TaskQueueFullError
 from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.controllers.manager.redis_manager import RedisTaskManager
 from app.controllers.v1.base import new_router
+from app.security.operator import require_gx1_operator
 from app.models.exception import HttpException
 from app.models.schema import (
     AudioRequest,
@@ -27,7 +28,7 @@ from app.models.schema import (
     TaskResponse,
     TaskVideoRequest,
     VideoMaterialUploadResponse,
-    VideoMaterialRetrieveResponse
+    VideoMaterialRetrieveResponse,
 )
 from app.services import state as sm
 from app.services import task as tm
@@ -73,7 +74,9 @@ def _sanitize_upload_filename(filename: str, request_id: str) -> str:
     return normalized_name
 
 
-def _resolve_path_within_directory(base_dir: str, unsafe_path: str, request_id: str) -> str:
+def _resolve_path_within_directory(
+    base_dir: str, unsafe_path: str, request_id: str
+) -> str:
     try:
         return file_security.resolve_path_within_directory(base_dir, unsafe_path)
     except ValueError as exc:
@@ -86,6 +89,7 @@ def _resolve_path_within_directory(base_dir: str, unsafe_path: str, request_id: 
             status_code=404 if str(exc) == "file does not exist" else 403,
             message=f"{request_id}: invalid file path",
         )
+
 
 def _task_file_to_uri(file: str, endpoint: str, task_dir: str, request_id: str) -> str:
     if not isinstance(file, str):
@@ -114,21 +118,30 @@ def _task_file_to_uri(file: str, endpoint: str, task_dir: str, request_id: str) 
 
 @router.post("/videos", response_model=TaskResponse, summary="Generate a short video")
 def create_video(
-    background_tasks: BackgroundTasks, request: Request, body: TaskVideoRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: TaskVideoRequest,
+    _: None = Depends(require_gx1_operator),
 ):
     return create_task(request, body, stop_at="video")
 
 
 @router.post("/subtitle", response_model=TaskResponse, summary="Generate subtitle only")
 def create_subtitle(
-    background_tasks: BackgroundTasks, request: Request, body: SubtitleRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: SubtitleRequest,
+    _: None = Depends(require_gx1_operator),
 ):
     return create_task(request, body, stop_at="subtitle")
 
 
 @router.post("/audio", response_model=TaskResponse, summary="Generate audio only")
 def create_audio(
-    background_tasks: BackgroundTasks, request: Request, body: AudioRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: AudioRequest,
+    _: None = Depends(require_gx1_operator),
 ):
     return create_task(request, body, stop_at="audio")
 
@@ -163,8 +176,14 @@ def create_task(
             task_id=task_id, status_code=400, message=f"{request_id}: {str(e)}"
         )
 
+
 @router.get("/tasks", response_model=TaskQueryResponse, summary="Get all tasks")
-def get_all_tasks(request: Request, page: int = Query(1, ge=1), page_size: int = Query(10, ge=1)):
+def get_all_tasks(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1),
+    _: None = Depends(require_gx1_operator),
+):
     tasks, total = sm.state.get_all_tasks(page, page_size)
 
     response = {
@@ -176,7 +195,6 @@ def get_all_tasks(request: Request, page: int = Query(1, ge=1), page_size: int =
     return utils.get_response(200, response)
 
 
-
 @router.get(
     "/tasks/{task_id}", response_model=TaskQueryResponse, summary="Query task status"
 )
@@ -184,6 +202,7 @@ def get_task(
     request: Request,
     task_id: str = Path(..., description="Task ID"),
     query: TaskQueryRequest = Depends(),
+    _: None = Depends(require_gx1_operator),
 ):
     request_id = base.get_task_id(request)
     endpoint = config.app.get("endpoint", "").rstrip("/")
@@ -214,7 +233,11 @@ def get_task(
     response_model=TaskDeletionResponse,
     summary="Delete a generated short video task",
 )
-def delete_video(request: Request, task_id: str = Path(..., description="Task ID")):
+def delete_video(
+    request: Request,
+    task_id: str = Path(..., description="Task ID"),
+    _: None = Depends(require_gx1_operator),
+):
     request_id = base.get_task_id(request)
     task = sm.state.get_task(task_id)
     if task:
@@ -235,7 +258,7 @@ def delete_video(request: Request, task_id: str = Path(..., description="Task ID
 @router.get(
     "/musics", response_model=BgmRetrieveResponse, summary="Retrieve local BGM files"
 )
-def get_bgm_list(request: Request):
+def get_bgm_list(request: Request, _: None = Depends(require_gx1_operator)):
     suffix = "*.mp3"
     song_dir = utils.song_dir()
     files = glob.glob(os.path.join(song_dir, suffix))
@@ -260,7 +283,11 @@ def get_bgm_list(request: Request):
     response_model=BgmUploadResponse,
     summary="Upload the BGM file to the songs directory",
 )
-def upload_bgm_file(request: Request, file: UploadFile = File(...)):
+def upload_bgm_file(
+    request: Request,
+    file: UploadFile = File(...),
+    _: None = Depends(require_gx1_operator),
+):
     request_id = base.get_task_id(request)
     safe_filename = _sanitize_upload_filename(file.filename, request_id)
     # check file ext
@@ -279,10 +306,13 @@ def upload_bgm_file(request: Request, file: UploadFile = File(...)):
         "", status_code=400, message=f"{request_id}: Only *.mp3 files can be uploaded"
     )
 
+
 @router.get(
-    "/video_materials", response_model=VideoMaterialRetrieveResponse, summary="Retrieve local video materials"
+    "/video_materials",
+    response_model=VideoMaterialRetrieveResponse,
+    summary="Retrieve local video materials",
 )
-def get_video_materials_list(request: Request):
+def get_video_materials_list(request: Request, _: None = Depends(require_gx1_operator)):
     allowed_suffixes = ("mp4", "mov", "avi", "flv", "mkv", "jpg", "jpeg", "png")
     local_videos_dir = utils.storage_dir("local_videos", create=True)
     files = []
@@ -312,7 +342,11 @@ def get_video_materials_list(request: Request):
     response_model=VideoMaterialUploadResponse,
     summary="Upload the video material file to the local videos directory",
 )
-def upload_video_material_file(request: Request, file: UploadFile = File(...)):
+def upload_video_material_file(
+    request: Request,
+    file: UploadFile = File(...),
+    _: None = Depends(require_gx1_operator),
+):
     request_id = base.get_task_id(request)
     safe_filename = _sanitize_upload_filename(file.filename, request_id)
     # check file ext
@@ -331,8 +365,11 @@ def upload_video_material_file(request: Request, file: UploadFile = File(...)):
         return utils.get_response(200, response)
 
     raise HttpException(
-        "", status_code=400, message=f"{request_id}: Only files with extensions {', '.join(allowed_suffixes)} can be uploaded"
+        "",
+        status_code=400,
+        message=f"{request_id}: Only files with extensions {', '.join(allowed_suffixes)} can be uploaded",
     )
+
 
 @router.get("/stream/{file_path:path}")
 async def stream_video(request: Request, file_path: str):

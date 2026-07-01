@@ -28,16 +28,15 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="GX1 Video Forge",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "About": "# GX1 Video Forge\nPrivate GXEON/GX1 operator build for internal video generation workflows. "
+        "Based on MoneyPrinterTurbo by Harry under the original MIT license; "
+        "see NOTICE.md and THIRD_PARTY_LICENSES.md for attribution.",
     },
 )
 
@@ -151,7 +150,7 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"GX1 Video Forge v{config.project_version}")
 
 with lang_col:
     display_languages = []
