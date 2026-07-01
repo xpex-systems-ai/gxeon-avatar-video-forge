@@ -28,16 +28,18 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "About": "# Cenara\nPowered by GXEON. Based on the upstream MIT-licensed "
+        "MoneyPrinterTurbo project. Simply provide a topic or keyword for a video, "
+        "and it will automatically generate the video copy, video materials, "
+        "video subtitles, and background music before synthesizing a "
+        "high-definition short video.\n\n"
+        "Upstream: https://github.com/harry0703/MoneyPrinterTurbo",
     },
 )
 
@@ -164,7 +166,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title(f"Cenara v{config.project_version}")
+    st.caption("Powered by GXEON")
 
 with lang_col:
     display_languages = []
@@ -768,21 +771,30 @@ if not config.app.get("hide_config", False):
 
             st.write(tr("Video Source Settings"))
 
-            pexels_api_key = get_keys_from_config("pexels_api_keys")
+            pexels_saved_keys = get_keys_from_config("pexels_api_keys")
             pexels_api_key = st.text_input(
-                tr("Pexels API Key"), value=pexels_api_key, type="password"
+                tr("Pexels API Key"),
+                value="",
+                type="password",
+                placeholder=_secret_placeholder(pexels_saved_keys),
             )
             save_keys_to_config("pexels_api_keys", pexels_api_key)
 
-            pixabay_api_key = get_keys_from_config("pixabay_api_keys")
+            pixabay_saved_keys = get_keys_from_config("pixabay_api_keys")
             pixabay_api_key = st.text_input(
-                tr("Pixabay API Key"), value=pixabay_api_key, type="password"
+                tr("Pixabay API Key"),
+                value="",
+                type="password",
+                placeholder=_secret_placeholder(pixabay_saved_keys),
             )
             save_keys_to_config("pixabay_api_keys", pixabay_api_key)
 
-            coverr_api_key = get_keys_from_config("coverr_api_keys")
+            coverr_saved_keys = get_keys_from_config("coverr_api_keys")
             coverr_api_key = st.text_input(
-                tr("Coverr API Key"), value=coverr_api_key, type="password"
+                tr("Coverr API Key"),
+                value="",
+                type="password",
+                placeholder=_secret_placeholder(coverr_saved_keys),
             )
             save_keys_to_config("coverr_api_keys", coverr_api_key)
 
@@ -1625,7 +1637,9 @@ with right_panel:
             else:
                 st.info(tr("No Pexels API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
+            new_key = st.text_input(
+                tr("Add Pexels API Key"), key="pexels_new_key", type="password"
+            )
             if st.button(tr("Add Pexels API Key")):
                 if new_key and new_key not in config.app["pexels_api_keys"]:
                     config.app["pexels_api_keys"].append(new_key)
@@ -1658,7 +1672,9 @@ with right_panel:
             else:
                 st.info(tr("No Pixabay API Keys currently"))
 
-            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
+            new_key = st.text_input(
+                tr("Add Pixabay API Key"), key="pixabay_new_key", type="password"
+            )
             if st.button(tr("Add Pixabay API Key")):
                 if new_key and new_key not in config.app["pixabay_api_keys"]:
                     config.app["pixabay_api_keys"].append(new_key)
@@ -1697,7 +1713,9 @@ with right_panel:
             else:
                 st.info(tr("No Coverr API Keys currently"))
 
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
+            new_key = st.text_input(
+                tr("Add Coverr API Key"), key="coverr_new_key", type="password"
+            )
             if st.button(tr("Add Coverr API Key")):
                 if new_key and new_key not in config.app["coverr_api_keys"]:
                     config.app["coverr_api_keys"].append(new_key)

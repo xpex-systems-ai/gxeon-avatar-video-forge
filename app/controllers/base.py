@@ -16,6 +16,14 @@ def get_task_id(request: Request):
 
 def get_api_key(request: Request):
     api_key = request.headers.get("x-api-key")
+    if api_key:
+        return api_key
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token.strip()
+
     return api_key
 
 
