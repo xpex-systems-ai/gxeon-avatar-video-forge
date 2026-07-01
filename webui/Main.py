@@ -28,16 +28,14 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
     menu_items={
         "Report a bug": "https://github.com/harry0703/MoneyPrinterTurbo/issues",
-        "About": "# MoneyPrinterTurbo\nSimply provide a topic or keyword for a video, and it will "
-        "automatically generate the video copy, video materials, video subtitles, "
-        "and video background music before synthesizing a high-definition short "
-        "video.\n\nhttps://github.com/harry0703/MoneyPrinterTurbo",
+        "About": "# Cenara\nCenara is a GXEON private MVP based on MoneyPrinterTurbo by Harry under MIT license.\n\n"
+        "Upstream attribution: https://github.com/harry0703/MoneyPrinterTurbo",
     },
 )
 
@@ -50,6 +48,46 @@ h1 {
 </style>
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
+
+
+def _is_private_operator_mode() -> bool:
+    return bool(
+        os.getenv("GX1_ACCESS_TOKEN")
+        or os.getenv("APP_ENV", "").lower() == "production"
+        or os.getenv("RAILWAY_ENVIRONMENT")
+    )
+
+
+def _require_private_webui_access() -> None:
+    if not _is_private_operator_mode():
+        return
+
+    token = os.getenv("GX1_ACCESS_TOKEN", "")
+    if not token:
+        st.error("Cenara private MVP is closed until GX1_ACCESS_TOKEN is configured.")
+        st.stop()
+
+    if st.session_state.get("gx1_operator_authenticated") is True:
+        return
+
+    st.title("Cenara")
+    st.caption("Powered by GXEON")
+    supplied_token = st.text_input("Private access token", type="password")
+    if st.button("Unlock Cenara"):
+        if supplied_token and supplied_token == token:
+            st.session_state["gx1_operator_authenticated"] = True
+            st.rerun()
+        st.error("Invalid access token.")
+    st.stop()
+
+
+def _mask_api_key(key: str) -> str:
+    key = str(key or "")
+    if len(key) <= 8:
+        return "•" * len(key)
+    return f"{key[:4]}{'•' * 8}{key[-4:]}"
+
+_require_private_webui_access()
 
 # 定义资源目录
 font_dir = os.path.join(root_dir, "resource", "fonts")
@@ -151,7 +189,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title("Cenara")
+st.caption("Powered by GXEON")
 
 with lang_col:
     display_languages = []
@@ -1592,7 +1631,7 @@ with right_panel:
             if config.app["pexels_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["pexels_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_api_key(key))
             else:
                 st.info(tr("No Pexels API Keys currently"))
 
@@ -1622,7 +1661,7 @@ with right_panel:
             if config.app["pixabay_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["pixabay_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_api_key(key))
             else:
                 st.info(tr("No Pixabay API Keys currently"))
 
@@ -1658,7 +1697,7 @@ with right_panel:
             if config.app["coverr_api_keys"]:
                 st.write(tr("Current Keys:"))
                 for key in config.app["coverr_api_keys"]:
-                    st.code(key)
+                    st.code(_mask_api_key(key))
             else:
                 st.info(tr("No Coverr API Keys currently"))
 

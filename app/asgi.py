@@ -63,6 +63,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Generated media static mount is kept for local Streamlit previews only.
+# Do not expose /tasks directly to public customers; production access must use
+# authenticated /api/v1/stream and /api/v1/download routes or equivalent edge auth.
 task_dir = utils.task_dir()
 app.mount(
     "/tasks", StaticFiles(directory=task_dir, html=True, follow_symlink=True), name=""
