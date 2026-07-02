@@ -17,7 +17,10 @@ def derive_safe_video_terms(*texts, limit: int = 6):
     stop_words = {"para", "com", "uma", "que", "seu", "sua", "dos", "das", "por", "the", "and", "you", "your", "with"}
     words = []
     source = " ".join(str(text or "") for text in texts)
+    source = re.sub(r"https?://\S+|www\.\S+|\S+@\S+", " ", source)
     for word in re.findall(r"[A-Za-zÀ-ÿ0-9]{3,}", source.lower()):
+        if len(word) > 20 or re.fullmatch(r"[a-z0-9_-]{18,}", word):
+            continue
         if word not in words and word not in stop_words:
             words.append(word)
         if len(words) >= limit:
