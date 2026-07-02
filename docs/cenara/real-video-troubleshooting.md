@@ -12,9 +12,11 @@ Isso evita depender de caminhos locais do servidor, que podem falhar em ambiente
 
 ## Biblioteca com preview e download
 
-A Biblioteca lista MP4s verificados encontrados em `storage/tasks` e `storage`. Cada item mostra apenas metadados seguros para o operador: nome do arquivo, tamanho em MB, data de geração e status de verificação. Ao abrir um item, a UI renderiza o player com `st.video` a partir dos bytes do arquivo e também exibe o botão **Baixar MP4**.
+A Biblioteca lista MP4s verificados encontrados em `storage/tasks` e `storage`. Por padrão, cada item mostra apenas metadados seguros para o operador: nome do arquivo, tamanho em MB, data de geração e status de verificação.
 
-Arquivos antigos continuam sendo biblioteca; eles não são tratados como sucesso da geração atual. Para validar uma tarefa atual, gere novamente e use o preview exibido para o task em execução.
+O preview e o botão **Baixar MP4** só são carregados depois que o operador clica em **Carregar preview e download** no item desejado. Isso evita leitura/transcodificação ansiosa de todos os MP4s da biblioteca a cada rerun do Streamlit.
+
+Arquivos antigos continuam sendo biblioteca; eles não são tratados como sucesso da geração atual. Para validar uma tarefa atual, gere novamente e use o preview exibido para o task em execução. Os widgets de download usam chaves únicas por contexto de renderização, evitando colisões de IDs do Streamlit quando o mesmo MP4 aparece no Preview Real e na Biblioteca.
 
 ## Recuperação do Preview Real
 

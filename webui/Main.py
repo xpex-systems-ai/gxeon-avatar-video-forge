@@ -1032,7 +1032,24 @@ def cenara_normalize_mp4_for_browser(path):
     return original
 
 
-def cenara_render_mp4_player(path, label="Abrir vídeo"):
+
+def cenara_mp4_widget_key(path, context="preview"):
+    try:
+        candidate = Path(path).expanduser().resolve()
+        stat = candidate.stat()
+        raw = "|".join([
+            str(context or "preview"),
+            candidate.name,
+            str(candidate),
+            str(stat.st_size),
+            str(int(stat.st_mtime_ns)),
+        ])
+    except (OSError, TypeError, ValueError):
+        raw = "|".join([str(context or "preview"), Path(str(path or "unknown")).name])
+    digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"cenara_mp4_{digest}"
+
+def cenara_render_mp4_player(path, label="Abrir vídeo", context="preview"):
     if label:
         st.markdown(f"**{label}**")
     candidate = cenara_normalize_mp4_for_browser(path)
@@ -1047,7 +1064,7 @@ def cenara_render_mp4_player(path, label="Abrir vídeo"):
         st.warning("MP4 maior que 150MB: preview inline ignorado para estabilidade do navegador. Use o download.")
     else:
         st.video(video_bytes, format="video/mp4")
-    st.download_button("Baixar MP4", data=video_bytes, file_name=candidate.name, mime="video/mp4", use_container_width=True)
+    st.download_button("Baixar MP4", data=video_bytes, file_name=candidate.name, mime="video/mp4", use_container_width=True, key=f"cenara_mp4_download_{cenara_mp4_widget_key(candidate, context)}")
     return candidate
 
 
@@ -1271,7 +1288,8 @@ def cenara_render_real_preview(mp4_path):
         st.info("Nenhum vídeo real gerado ainda.")
         return
 
-    rendered_path = cenara_render_mp4_player(candidate, label="Último MP4 verificado encontrado" if recovered_from_library else "MP4 da geração atual")
+    preview_context = "real_preview_recovered" if recovered_from_library else "real_preview_current"
+    rendered_path = cenara_render_mp4_player(candidate, label="Último MP4 verificado encontrado" if recovered_from_library else "MP4 da geração atual", context=preview_context)
     if not rendered_path:
         return
     if current_task_mp4:
@@ -1293,10 +1311,16 @@ def cenara_render_recent_videos():
         if not cenara_is_safe_deliverable_mp4(path):
             continue
         meta = _cenara_mp4_metadata(path)
+        library_context = f"library_{cenara_mp4_widget_key(path, 'library')}"
+        load_key = f"cenara_mp4_load_{cenara_mp4_widget_key(path, library_context)}"
+        session_key = f"cenara_mp4_loaded_{cenara_mp4_widget_key(path, library_context)}"
         with st.expander(f"{meta['name']} · {meta['mtime']:%d/%m/%Y %H:%M}", expanded=False):
             st.success("Status: MP4 verificado")
             st.caption(f"Arquivo: {meta['name']} · Tamanho: {meta['size_mb']:.2f} MB · Gerado em: {meta['mtime']:%d/%m/%Y %H:%M}")
-            cenara_render_mp4_player(path)
+            if st.button("Carregar preview e download", key=load_key, use_container_width=True):
+                st.session_state[session_key] = True
+            if st.session_state.get(session_key):
+                cenara_render_mp4_player(path, context=library_context)
 
 CENARA_PROJECTS_FILE = Path(root_dir) / "storage" / "cenara_projects.json"
 
