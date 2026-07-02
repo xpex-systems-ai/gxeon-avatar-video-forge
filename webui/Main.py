@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import webbrowser
+import json
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -48,12 +49,12 @@ st.set_page_config(
 streamlit_style = """
 <style>
 :root {
-    --cenara-bg: #020817;
-    --cenara-panel: rgba(15, 23, 42, 0.74);
+    --cenara-bg: #060816;
+    --cenara-panel: rgba(12, 18, 36, 0.82);
     --cenara-panel-strong: rgba(15, 23, 42, 0.92);
     --cenara-border: rgba(148, 163, 184, 0.16);
-    --cenara-blue: #2563eb;
-    --cenara-purple: #7c3aed;
+    --cenara-blue: #5B7CFF;
+    --cenara-purple: #8B5CF6;
     --cenara-cyan: #06b6d4;
     --cenara-green: #22c55e;
     --cenara-text: #f8fafc;
@@ -133,6 +134,23 @@ h1, h2, h3 { color: var(--cenara-text) !important; }
 .cenara-footer-cta { margin-top:1rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1.25rem 1.6rem; border-radius:22px; border:1px solid rgba(96,165,250,.25); background:linear-gradient(105deg, rgba(37,99,235,.36), rgba(124,58,237,.30)), radial-gradient(circle at 72% 50%, rgba(56,189,248,.25), transparent 14rem); }
 .cenara-footer-title { font-size:1.25rem; font-weight:950; color:#fff; } .cenara-footer-button { padding:.85rem 1.8rem; border-radius:13px; background:linear-gradient(135deg,#2563eb,#7c3aed); color:#fff; font-weight:900; opacity:.78; }
 .cenara-footer-note { color:#94a3b8; font-size:.82rem; text-align:center; margin:1rem 0 .35rem; }
+
+.cenara-hero { padding:1.5rem; border:1px solid rgba(91,124,255,.26); border-radius:28px; background:radial-gradient(circle at 75% 15%, rgba(139,92,246,.35), transparent 18rem), linear-gradient(135deg, rgba(12,18,36,.94), rgba(16,25,53,.72)); box-shadow:0 28px 90px rgba(2,8,23,.42); margin-bottom:1rem; }
+.cenara-eyebrow { color:#93c5fd; text-transform:uppercase; letter-spacing:.14em; font-weight:900; font-size:.74rem; }
+.cenara-hero h1 { font-size:clamp(2.1rem, 5vw, 4.6rem); line-height:.95; margin:.35rem 0 .7rem; letter-spacing:-.06em; }
+.cenara-badges { display:flex; gap:.55rem; flex-wrap:wrap; margin:.85rem 0; }
+.cenara-badge { padding:.45rem .7rem; border-radius:999px; background:rgba(91,124,255,.14); border:1px solid rgba(255,255,255,.09); color:#dbeafe; font-weight:800; font-size:.82rem; }
+.cenara-stepper { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:.45rem; margin:.75rem 0 1rem; }
+.cenara-step { padding:.65rem .45rem; border-radius:14px; text-align:center; color:#a7b0d6; background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.07); font-weight:800; font-size:.82rem; }
+.cenara-step.active { color:#fff; background:linear-gradient(135deg, rgba(91,124,255,.52), rgba(139,92,246,.34)); border-color:rgba(91,124,255,.44); }
+.cenara-workspace-card { border:1px solid rgba(255,255,255,.08); border-radius:24px; padding:1rem; background:linear-gradient(145deg, rgba(12,18,36,.86), rgba(6,8,22,.62)); min-height:100%; }
+.cenara-card-kicker { color:#93c5fd; font-size:.76rem; font-weight:900; text-transform:uppercase; letter-spacing:.1em; }
+.cenara-status-lane { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.65rem; margin:.75rem 0 1rem; }
+.cenara-timeline { display:grid; gap:.35rem; margin-top:.7rem; }
+.cenara-timeline-row { display:flex; justify-content:space-between; gap:.75rem; padding:.45rem .6rem; border-radius:12px; background:rgba(255,255,255,.035); color:#cbd5e1; font-size:.82rem; }
+.cenara-status-dot { width:.55rem; height:.55rem; border-radius:999px; background:#22c55e; display:inline-block; margin-right:.35rem; box-shadow:0 0 16px rgba(34,197,94,.55); }
+@media (max-width: 900px) { .cenara-stepper, .cenara-status-lane { grid-template-columns:repeat(2,1fr); } }
+
 @media (max-width: 1100px) { .cenara-dashboard { grid-template-columns:1fr; } .cenara-sidebar { position:relative; min-height:auto; } .cenara-grid, .cenara-metrics, .cenara-modules { grid-template-columns:1fr; } .cenara-project-grid { grid-template-columns:1fr; } }
 </style>
 """
@@ -546,24 +564,48 @@ def cenara_render_recent_videos():
             with open(path, "rb") as video_file:
                 st.download_button("Baixar MP4", video_file, file_name=path.name, mime="video/mp4", key=f"download_{path.name}_{int(stat.st_mtime)}")
 
+CENARA_PROJECTS_FILE = Path(root_dir) / "storage" / "cenara_projects.json"
+
+
+def cenara_load_projects():
+    if not CENARA_PROJECTS_FILE.exists():
+        return []
+    try:
+        return json.loads(CENARA_PROJECTS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"failed to load Cenara projects: {exc}")
+        return []
+
+
+def cenara_save_project_record(task_id, payload, mp4_path=None, status="completed"):
+    CENARA_PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    projects = cenara_load_projects()
+    projects.insert(0, {"id": task_id, "title": payload.video_subject or "Projeto Cenara", "status": status, "source": payload.video_source, "aspect": str(payload.video_aspect), "mp4_path": str(mp4_path) if mp4_path else "", "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"})
+    CENARA_PROJECTS_FILE.write_text(json.dumps(projects[:50], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cenara_render_hero_and_stepper():
+    st.markdown("""<section class="cenara-hero"><div class="cenara-eyebrow">Ultimate AI video workspace</div><h1>Cenara transforma briefs em vídeos prontos para vender.</h1><div class="cenara-subtitle">Um cockpit premium para roteiro, mídia, voz, legendas, montagem, preview e exportação MP4 real.</div><div class="cenara-badges"><span class="cenara-badge">Ads & Sales</span><span class="cenara-badge">Avatares e Voz IA</span><span class="cenara-badge">Clips / Shorts</span></div></section>""", unsafe_allow_html=True)
+    steps = ["Ideia", "Roteiro", "Mídia", "Voz", "Legendas", "Montagem", "Preview", "Exportar"]
+    st.markdown('<div class="cenara-stepper">' + ''.join(f'<div class="cenara-step {"active" if i < 3 else ""}">{step}</div>' for i, step in enumerate(steps)) + '</div>', unsafe_allow_html=True)
+
 def cenara_render_provider_center(readiness):
-    st.subheader("Central de Provedores")
     overall_blocked = any(status == "blocked" for status, _ in readiness.values())
-    st.write(f"Status geral: {'Bloqueado' if overall_blocked else 'Pronto'}")
-    cols = st.columns(4)
-    for index, (label, (status, detail)) in enumerate(readiness.items()):
-        with cols[index % 4]:
-            st.metric(label, cenara_status_label(status), detail)
+    with st.expander("Central de Provedores · chaves preservadas quando campos ficam em branco", expanded=False):
+        st.caption(f"Status geral: {'Bloqueado' if overall_blocked else 'Pronto'} · segredos salvos nunca são exibidos.")
+        cols = st.columns(4)
+        for index, (label, (status, detail)) in enumerate(readiness.items()):
+            with cols[index % 4]:
+                st.metric(label, cenara_status_label(status), detail)
 
 def cenara_render_command_center(params, selected_tts_server):
-    st.title("Criar vídeo real com IA")
-    st.caption("Configure o criativo, gere o vídeo, revise o preview e baixe o MP4.")
-    st.markdown("**Privado** · **Seguro** · **Powered by GXEON** · **Baseado no MoneyPrinterTurbo MIT**")
+    st.markdown(render_cenara_topbar(), unsafe_allow_html=True)
+    cenara_render_hero_and_stepper()
     readiness = cenara_provider_readiness(params.video_source, selected_tts_server)
     cenara_render_provider_center(readiness)
-    left, right = st.columns([1.15, 0.85], gap="large")
+    left, middle, right = st.columns([1.05, 1.05, 0.9], gap="large")
     with left:
-        st.subheader("Criador de Vídeo")
+        st.markdown('<div class="cenara-workspace-card"><div class="cenara-card-kicker">01 · AI Briefing</div><h3>Direção criativa</h3><p class="cenara-card-copy">Gere roteiro, hook, CTA, variações e palavras-chave usando o motor real configurado.</p></div>', unsafe_allow_html=True)
         with st.form("cenara_real_creator_form"):
             tema = st.text_input("Tema do vídeo", value=st.session_state.get("video_subject", ""), key="cenara_tema")
             publico = st.text_input("Público-alvo", key="cenara_publico")
@@ -577,33 +619,46 @@ def cenara_render_command_center(params, selected_tts_server):
             fonte_video = st.selectbox("Fonte do vídeo", ["pexels", "pixabay", "coverr", "local"], index=["pexels", "pixabay", "coverr", "local"].index(params.video_source if params.video_source in ["pexels", "pixabay", "coverr", "local"] else "pexels"), key="cenara_fonte_video")
             voz_tts = st.text_input("Voz", value=params.voice_name or config.ui.get("voice_name", ""), key="cenara_voz_tts")
             submitted = st.form_submit_button("Gerar vídeo real", use_container_width=True, type="primary")
-        if submitted:
-            form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
-            payload = cenara_build_generation_payload(form, params)
-            st.session_state["video_subject"] = payload.video_subject
-            st.session_state["video_script"] = payload.video_script
-            st.session_state["video_terms"] = payload.video_terms
-            errors = cenara_validate_generation_payload(payload)
-            if errors:
-                for error in errors:
-                    st.error(error)
-                st.stop()
-            task_id = str(uuid4())
-            st.info(f"Geração iniciada. Acompanhe o progresso abaixo. task_id: {task_id}")
-            status_box = st.status("preparando roteiro", expanded=True)
-            status_box.write("buscando mídia, gerando voz, montando vídeo e renderizando pelo motor real")
-            result = cenara_trigger_real_generation(task_id, payload)
-            latest = cenara_find_latest_mp4(task_id=task_id, limit=1)
-            if result and latest:
-                status_box.update(label="finalizando", state="complete")
-                st.session_state["cenara_latest_mp4"] = str(latest[0])
-                st.success("Vídeo real gerado com sucesso.")
-            else:
-                status_box.update(label="geração sem MP4", state="error")
-                st.error("A geração terminou, mas nenhum MP4 foi encontrado. Verifique o diretório de saída.")
+    with middle:
+        st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>Ativas</strong></div></div></div>', unsafe_allow_html=True)
+        st.info("Os controles completos de mídia, voz, música, subtítulos, transições e renderização continuam disponíveis em Controles avançados MoneyPrinterTurbo.")
+    if submitted:
+        form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
+        payload = cenara_build_generation_payload(form, params)
+        st.session_state["video_subject"] = payload.video_subject
+        st.session_state["video_script"] = payload.video_script
+        st.session_state["video_terms"] = payload.video_terms
+        errors = cenara_validate_generation_payload(payload)
+        if errors:
+            for error in errors:
+                st.error(error)
+            st.stop()
+        task_id = str(uuid4())
+        st.info(f"Geração iniciada. Acompanhe o progresso abaixo. task_id: {task_id}")
+        status_box = st.status("preparando roteiro", expanded=True)
+        status_box.write("buscando mídia, gerando voz, montando vídeo e renderizando pelo motor real")
+        result = cenara_trigger_real_generation(task_id, payload)
+        latest = cenara_find_latest_mp4(task_id=task_id, limit=1)
+        if result and latest:
+            status_box.update(label="finalizando", state="complete")
+            st.session_state["cenara_latest_mp4"] = str(latest[0])
+            cenara_save_project_record(task_id, payload, latest[0], "completed")
+            st.success("Vídeo real gerado com sucesso.")
+        else:
+            status_box.update(label="geração sem MP4", state="error")
+            cenara_save_project_record(task_id, payload, None, "failed")
+            st.error("A geração terminou, mas nenhum MP4 foi encontrado. Verifique o diretório de saída.")
     with right:
+        st.markdown('<div class="cenara-workspace-card"><div class="cenara-card-kicker">03 · Preview & Output</div><h3>Render real</h3></div>', unsafe_allow_html=True)
         latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else (cenara_find_latest_mp4(limit=1)[0] if cenara_find_latest_mp4(limit=1) else None)
         cenara_render_real_preview(latest_path)
+    recent_projects = cenara_load_projects()[:6]
+    if recent_projects:
+        st.subheader("Projetos recentes")
+        project_cols = st.columns(3)
+        for index, project in enumerate(recent_projects):
+            with project_cols[index % 3]:
+                st.markdown(f"""<div class="cenara-flow-card"><div class="cenara-flow-title">{project.get('title','Projeto Cenara')[:80]}</div><div class="cenara-flow-copy">{project.get('status','')} · {project.get('source','')} · {project.get('created_at','')}</div></div>""", unsafe_allow_html=True)
     cenara_render_recent_videos()
 
 
