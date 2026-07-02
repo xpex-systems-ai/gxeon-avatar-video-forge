@@ -5,6 +5,7 @@ import webbrowser
 import json
 import time
 import re
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -730,6 +731,29 @@ def cenara_classify_provider_error(exc_or_text):
         "next_action": "Verifique o estágio com falha e tente novamente com roteiro/manual, mídia e voz configurados.",
     }
 
+def cenara_secret_fingerprint(value: str) -> str:
+    normalized = str(value or "").strip()
+    if _is_missing_secret_value(normalized):
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def cenara_reset_llm_blocked_status_if_changed(provider_id: str, key_value: str = "") -> None:
+    normalized_provider = _llm_provider_id_normalized(provider_id)
+    last_provider = st.session_state.get("cenara_llm_provider_status_provider")
+    if last_provider and last_provider != normalized_provider:
+        st.session_state.pop("cenara_llm_provider_status", None)
+    st.session_state["cenara_llm_provider_status_provider"] = normalized_provider
+
+    fingerprint = cenara_secret_fingerprint(key_value)
+    if not fingerprint:
+        return
+    last_fingerprint = st.session_state.get("cenara_llm_provider_key_fingerprint")
+    if last_fingerprint and last_fingerprint != fingerprint:
+        st.session_state.pop("cenara_llm_provider_status", None)
+    st.session_state["cenara_llm_provider_key_fingerprint"] = fingerprint
+
+
 def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
     llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
     llm_ok = _has_configured_secret(_llm_provider_secret(llm_provider_id))
@@ -770,14 +794,14 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
     }
 
 def cenara_derive_manual_keywords(form):
-    source = " ".join((form.get(key) or "") for key in ["tema", "nicho", "publico", "promessa", "cta"])
+    source = " ".join((form.get(key) or "") for key in ["tema", "nicho", "publico", "promessa", "cta", "manual_script", "roteiro_manual"])
     words = []
     for word in re.findall(r"[A-Za-zÀ-ÿ0-9]{3,}", source.lower()):
         if word not in words and word not in {"para", "com", "uma", "que", "seu", "sua", "dos", "das", "por"}:
             words.append(word)
         if len(words) >= 6:
             break
-    return ", ".join(words or ["vídeo", "pessoas", "bem estar"])
+    return ", ".join(words)
 
 
 def cenara_build_generation_payload(form, current_params):
@@ -813,6 +837,8 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         errors.append("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
+        errors.append("Informe palavras-chave manuais ou preencha tema/nicho/público/promessa/CTA para a Cenara derivar termos seguros sem LLM.")
     llm_status = readiness.get("LLM", ("missing", ""))[0] if readiness else "missing"
     if not payload.video_script and llm_status == "missing":
         errors.append("Configure a chave do provedor LLM selecionado ou preencha o roteiro manual para dispensar a geração por LLM.")
@@ -925,6 +951,21 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
     logger.info(f"Cenara geração real iniciada task_id={task_id}")
     started_at = time.time()
     result = {"success": False, "task_id": task_id, "output_path": "", "error": "", "logs": []}
+    if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
+        derived_terms = cenara_derive_manual_keywords({
+            "tema": payload.video_subject,
+            "manual_script": payload.video_script,
+        })
+        if derived_terms:
+            payload.video_terms = derived_terms
+        else:
+            result.update(
+                error="Informe palavras-chave manuais para buscar mídia sem chamar o LLM.",
+                safe_error_code="MANUAL_TERMS_REQUIRED",
+                next_action="Preencha Palavras-chave opcionais com termos de busca como fitness, treino em casa, saúde.",
+            )
+            cenara_write_task_status(task_id, state="failed", failed_stage="media", safe_error_code="MANUAL_TERMS_REQUIRED", safe_message=result["error"], next_action=result["next_action"], script_ready=True, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+            return result
     cenara_write_task_status(task_id, state="queued", script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
     try:
         if status_box:
@@ -1328,6 +1369,7 @@ if not config.app.get("hide_config", False):
             ):
                 del st.session_state["llm_provider_select"]
 
+            previous_llm_provider = _llm_provider_id_normalized(config.app.get("llm_provider", "openai"))
             llm_provider = st.selectbox(
                 tr("LLM Provider"),
                 options=llm_provider_ids,
@@ -1335,6 +1377,9 @@ if not config.app.get("hide_config", False):
                 format_func=lambda provider_id: llm_provider_labels[provider_id],
                 key="llm_provider_select",
             )
+            if _llm_provider_id_normalized(llm_provider) != previous_llm_provider:
+                st.session_state.pop("cenara_llm_provider_status", None)
+            cenara_reset_llm_blocked_status_if_changed(llm_provider)
             llm_helper = st.container()
             config.app["llm_provider"] = llm_provider
 
@@ -1661,6 +1706,7 @@ if not config.app.get("hide_config", False):
                 st_llm_model_name = None
 
             if st_llm_api_key:
+                cenara_reset_llm_blocked_status_if_changed(llm_provider, st_llm_api_key)
                 config.app[f"{llm_provider}_api_key"] = st_llm_api_key
             if st_llm_base_url:
                 config.app[f"{llm_provider}_base_url"] = st_llm_base_url
@@ -1671,6 +1717,7 @@ if not config.app.get("hide_config", False):
                     tr("Secret Key"), value="", type="password", placeholder="Cole uma nova secret key para atualizar"
                 )
                 if st_llm_secret_key:
+                    cenara_reset_llm_blocked_status_if_changed(llm_provider, st_llm_secret_key)
                     config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
 
             if llm_provider == "cloudflare":

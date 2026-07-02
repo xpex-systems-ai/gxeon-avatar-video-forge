@@ -45,3 +45,13 @@ Cenara never displays raw API keys or detailed provider response bodies in the b
 10. Confirm preview/download appears only when the current task produced a real non-empty MP4.
 
 If no MP4 appears, inspect the **Prévia Real** status JSON for `failed_stage`, `safe_error_code`, `safe_message`, `next_action`, `script_ready`, `media_ready`, `audio_ready`, and `ffmpeg_available`.
+
+## Provider errors may be exceptions or `Error:` text
+
+Some LLM integrations raise an exception when quota, billing, rate-limit, or authentication fails. Others return a normal text response beginning with `Error:` or containing provider-error terms. Cenara treats both forms as provider failures, stores only a safe error code/message in task status, and does not use `Error: ...` text as a valid script.
+
+## Manual terms and blocked-session reset
+
+Manual mode needs a script plus search terms for remote media providers. Operators may provide **Palavras-chave opcionais** directly; if they leave that field empty, Cenara derives local safe terms from the brief and roteiro without calling the LLM. If Cenara cannot derive terms, it blocks before generation and asks for manual keywords.
+
+Changing the LLM provider or entering a new LLM key clears the previous quota/auth blocked status for the current session. The key itself is never displayed, logged, or stored in session state; Cenara only keeps a non-reversible session fingerprint so the stale blocked marker can be reset safely.
