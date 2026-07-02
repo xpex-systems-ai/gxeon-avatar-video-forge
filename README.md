@@ -465,3 +465,8 @@ Trying to load the model directly from the local cache, if it exists.
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=harry0703/MoneyPrinterTurbo&type=Date)](https://star-history.com/#harry0703/MoneyPrinterTurbo&Date)
+
+
+## Cenara premium workspace
+
+The Streamlit UI now opens as a premium dark Cenara AI video workspace for ads, sales, social content, avatars, clips, and branded video generation. After the private operator gate, creators get a topbar, provider control center, generation stepper, three-panel creation cockpit, real preview/download area, and lightweight project history stored under `storage/cenara_projects.json`. The rebuild preserves the existing MoneyPrinterTurbo runtime, provider configuration safety, and real MP4 generation flow. See `docs/cenara/workspace-rebuild.md` for architecture notes.
