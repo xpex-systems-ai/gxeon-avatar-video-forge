@@ -944,6 +944,77 @@ def _is_non_empty_mp4(path):
     return candidate.suffix.lower() == ".mp4" and candidate.is_file() and candidate.stat().st_size > 0
 
 
+def _cenara_storage_roots():
+    return [Path(root_dir) / "storage" / "tasks", Path(root_dir) / "storage"]
+
+
+def cenara_is_safe_deliverable_mp4(path):
+    try:
+        candidate = Path(path).expanduser().resolve()
+        storage_root = (Path(root_dir) / "storage").resolve()
+        if candidate.suffix.lower() != ".mp4" or not candidate.is_file():
+            return False
+        if candidate.stat().st_size <= 0:
+            return False
+        return _is_path_inside(candidate, storage_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _cenara_mp4_size_mb(path):
+    return Path(path).stat().st_size / (1024 * 1024)
+
+
+def _cenara_mp4_generated_at(path):
+    return datetime.fromtimestamp(Path(path).stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+
+
+def cenara_normalize_mp4_for_browser(path):
+    candidate = Path(path).resolve()
+    if not cenara_is_safe_deliverable_mp4(candidate):
+        return candidate
+    if candidate.name.endswith(".browser.mp4"):
+        return candidate
+    browser_copy = candidate.with_name(f"{candidate.stem}.browser.mp4")
+    if cenara_is_safe_deliverable_mp4(browser_copy) and browser_copy.stat().st_mtime >= candidate.stat().st_mtime:
+        return browser_copy
+    if os.getenv("CENARA_NORMALIZE_MP4_FOR_BROWSER") != "1":
+        return candidate
+    ffmpeg_binary = cenara_resolve_ffmpeg_binary()
+    if not ffmpeg_binary:
+        return candidate
+    command = [ffmpeg_binary, "-y", "-i", str(candidate), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "128k", str(browser_copy)]
+    retry_command = [ffmpeg_binary, "-y", "-i", str(candidate), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(browser_copy)]
+    for attempt in (command, retry_command):
+        try:
+            subprocess.run(attempt, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=180)
+            if cenara_is_safe_deliverable_mp4(browser_copy):
+                return browser_copy
+        except Exception as exc:
+            logger.warning(f"Cenara browser MP4 normalization failed safely: {type(exc).__name__}")
+    return candidate
+
+
+def cenara_render_mp4_player(path, label="Abrir vídeo"):
+    candidate = Path(path).resolve()
+    if not cenara_is_safe_deliverable_mp4(candidate):
+        st.warning("MP4 indisponível para preview/download seguro.")
+        return None
+    delivery_path = cenara_normalize_mp4_for_browser(candidate)
+    if not cenara_is_safe_deliverable_mp4(delivery_path):
+        delivery_path = candidate
+    size_mb = _cenara_mp4_size_mb(delivery_path)
+    st.caption(f"Arquivo: {delivery_path.name} · Tamanho: {size_mb:.2f} MB · Gerado em: {_cenara_mp4_generated_at(delivery_path)}")
+    with open(delivery_path, "rb") as video_file:
+        video_bytes = video_file.read()
+    if size_mb > 150:
+        st.warning("MP4 maior que 150MB: preview inline omitido para proteger o navegador. Use o download.")
+    else:
+        st.video(video_bytes, format="video/mp4")
+    st.download_button("Baixar MP4", data=video_bytes, file_name=delivery_path.name, mime="video/mp4", use_container_width=True)
+    return delivery_path
+
+
 def _task_dir_for(task_id):
     return Path(root_dir) / "storage" / "tasks" / str(task_id)
 
@@ -960,10 +1031,10 @@ def cenara_find_task_mp4(task_id, engine_video_paths=None, limit=12):
     task_dir = _task_dir_for(task_id)
     candidates = []
     if task_dir.exists():
-        candidates.extend(path for path in task_dir.rglob("*.mp4") if _is_non_empty_mp4(path))
+        candidates.extend(path for path in task_dir.rglob("*.mp4") if cenara_is_safe_deliverable_mp4(path))
     for path in engine_video_paths or []:
         candidate = Path(path)
-        if _is_non_empty_mp4(candidate) and _is_path_inside(candidate, task_dir):
+        if cenara_is_safe_deliverable_mp4(candidate) and _is_path_inside(candidate, task_dir):
             candidates.append(candidate)
     return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
@@ -971,12 +1042,12 @@ def cenara_find_task_mp4(task_id, engine_video_paths=None, limit=12):
 def cenara_find_latest_mp4(task_id=None, limit=12):
     if task_id:
         return cenara_find_task_mp4(task_id, limit=limit)
-    roots = [Path(root_dir) / "storage" / "tasks", Path(root_dir) / "storage"]
+    roots = _cenara_storage_roots()
     candidates = []
     for base in roots:
         if not base.exists():
             continue
-        candidates.extend(path for path in base.rglob("*.mp4") if _is_non_empty_mp4(path))
+        candidates.extend(path for path in base.rglob("*.mp4") if cenara_is_safe_deliverable_mp4(path))
     return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
 CENARA_PIPELINE_STAGES = ["queued", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_ready", "completed", "failed"]
@@ -1159,34 +1230,48 @@ def cenara_render_real_preview(mp4_path):
     if current_task_id:
         task_status = cenara_read_task_status(current_task_id)
         if task_status:
-            st.json({k: task_status.get(k) for k in ["state", "failed_stage", "safe_error_code", "safe_message", "next_action", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_ready", "fallback_video_used", "provider_attempts", "ffmpeg_available", "output_path"] if k in task_status})
-    if not mp4_path:
-        st.info("Nenhum vídeo real gerado ainda.")
-        return
-    current_task_id = st.session_state.get("cenara_latest_task_id")
-    if current_task_id and not _is_path_inside(mp4_path, _task_dir_for(current_task_id)):
-        st.info("Nenhum MP4 novo desta geração está disponível para preview.")
-        return
-    stat = mp4_path.stat()
-    st.video(str(mp4_path))
-    if task_status.get("fallback_video_used"):
+            safe_status = {k: task_status.get(k) for k in ["state", "failed_stage", "safe_error_code", "safe_message", "next_action", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_ready", "fallback_video_used", "provider_attempts", "ffmpeg_available", "output_path"] if k in task_status}
+            if safe_status.get("output_path"):
+                safe_status["output_path"] = Path(safe_status["output_path"]).name
+            st.json(safe_status)
+    safe_current = mp4_path and cenara_is_safe_deliverable_mp4(mp4_path)
+    if safe_current and current_task_id and not _is_path_inside(mp4_path, _task_dir_for(current_task_id)):
+        safe_current = False
+    recovered_from_library = False
+    if not safe_current:
+        latest = cenara_find_latest_mp4(limit=1)
+        if latest:
+            mp4_path = latest[0]
+            recovered_from_library = True
+            st.success("MP4 encontrado e pronto para abrir/baixar.")
+            st.info("Este arquivo é da biblioteca; gere novamente para validar tarefa atual.")
+        else:
+            st.info("Nenhum vídeo real gerado ainda.")
+            return
+    else:
+        st.success("MP4 da geração atual verificado.")
+    if recovered_from_library:
+        st.caption("Último MP4 verificado encontrado na Biblioteca; não é marcado como sucesso da geração atual.")
+    elif task_status.get("fallback_video_used"):
         st.warning("MP4 real gerado em modo visual local; mídia externa não encontrada.")
     else:
         st.success("MP4 real com mídia externa verificado.")
-    st.caption(f"Arquivo: {mp4_path.name} · Tamanho: {stat.st_size / (1024 * 1024):.2f} MB · Gerado em: {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}")
-    with open(mp4_path, "rb") as video_file:
-        st.download_button("Baixar MP4", video_file, file_name=mp4_path.name, mime="video/mp4", use_container_width=True)
+    cenara_render_mp4_player(mp4_path, label="Último MP4 verificado encontrado" if recovered_from_library else "Abrir vídeo")
 
 def cenara_render_recent_videos():
     st.subheader("Biblioteca")
+    st.info("Arquivos antigos são biblioteca, não sucesso da geração atual.")
     videos = cenara_find_latest_mp4(limit=6)
     if not videos:
         st.info("Nenhum vídeo real gerado ainda.")
         return
     for path in videos:
-        stat = path.stat()
-        with st.expander(f"{path.name} · {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}", expanded=False):
-            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB · preview/download aparecem somente para o MP4 novo da geração atual.")
+        if not cenara_is_safe_deliverable_mp4(path):
+            continue
+        with st.expander(f"{path.name} · {_cenara_mp4_generated_at(path)}", expanded=False):
+            st.success("Status: MP4 verificado")
+            st.caption(f"Arquivo: {path.name} · Tamanho: {_cenara_mp4_size_mb(path):.2f} MB · Gerado em: {_cenara_mp4_generated_at(path)}")
+            cenara_render_mp4_player(path)
 
 CENARA_PROJECTS_FILE = Path(root_dir) / "storage" / "cenara_projects.json"
 
@@ -1299,7 +1384,7 @@ def cenara_render_command_center(params, selected_tts_server):
             st.session_state["cenara_latest_task_id"] = task_id
             cenara_save_project_record(task_id, payload, output_path, "completed")
             st.success(f"Vídeo real gerado com sucesso. task_id: {task_id}")
-            st.caption(f"Saída: {output_path}")
+            st.caption(f"Arquivo verificado: {output_path.name}")
         else:
             status_box.write("falhou")
             status_box.update(label="falhou", state="error")
