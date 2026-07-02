@@ -391,6 +391,32 @@ CENARA_PROVIDER_ENV_ALIASES = {
     "elevenlabs": ("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
 }
 
+CENARA_LLM_PROVIDER_ENV_ALIASES = {
+    "openai": ("OPENAI_API_KEY", "OPENAI_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "aihubmix": ("AIHUBMIX_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "azure": ("AZURE_OPENAI_API_KEY",),
+    "azure-openai": ("AZURE_OPENAI_API_KEY",),
+    "azure_openai": ("AZURE_OPENAI_API_KEY",),
+    "openai_azure": ("AZURE_OPENAI_API_KEY",),
+}
+
+CENARA_LLM_PROVIDER_CONFIG_KEYS = {
+    "openai": ("openai_api_key",),
+    "deepseek": ("deepseek_api_key",),
+    "aihubmix": ("aihubmix_api_key",),
+    "gemini": ("gemini_api_key", "google_api_key"),
+    "google": ("google_api_key", "gemini_api_key"),
+    "azure": ("azure_api_key", "azure_openai_api_key"),
+    "azure-openai": ("azure_openai_api_key", "azure_api_key"),
+    "azure_openai": ("azure_openai_api_key", "azure_api_key"),
+    "openai_azure": ("azure_openai_api_key", "azure_api_key"),
+}
+
+CENARA_ENV_RUNTIME_VALUES = {"app": {}, "elevenlabs": {}}
+
 CENARA_MASKED_SECRET_MARKERS = (
     "cole sua nova chave",
     "paste your new key",
@@ -423,44 +449,138 @@ def _normalize_secret_values(value) -> list[str]:
     return [str(item).strip() for item in candidates if not _is_missing_secret_value(item)]
 
 
+def _dedupe_preserving_order(values) -> list[str]:
+    unique_values = []
+    seen = set()
+    for value in values:
+        for normalized in _normalize_secret_values(value):
+            if normalized not in seen:
+                unique_values.append(normalized)
+                seen.add(normalized)
+    return unique_values
+
+
 def _has_configured_secret(value) -> bool:
     return bool(_normalize_secret_values(value))
 
 
+def _provider_secret_values_from_env(provider: str) -> list[str]:
+    return _dedupe_preserving_order(os.environ.get(env_name) for env_name in CENARA_PROVIDER_ENV_ALIASES.get(provider, ()))
+
+
 def _provider_secret_from_env(provider: str) -> str:
-    for env_name in CENARA_PROVIDER_ENV_ALIASES.get(provider, ()):
-        env_value = os.environ.get(env_name)
-        if not _is_missing_secret_value(env_value):
-            return env_value.strip()
-    return ""
+    values = _provider_secret_values_from_env(provider)
+    return values[0] if values else ""
+
+
+def _secret_values_from_env_names(env_names) -> list[str]:
+    return _dedupe_preserving_order(os.environ.get(env_name) for env_name in env_names)
+
+
+def _provider_secret_values_from_session(keys) -> list[str]:
+    return _dedupe_preserving_order(st.session_state.get(key) for key in keys)
 
 
 def _provider_secret_from_session(keys) -> str:
-    for key in keys:
-        session_value = st.session_state.get(key)
-        if not _is_missing_secret_value(session_value):
-            return str(session_value).strip()
+    values = _provider_secret_values_from_session(keys)
+    return values[0] if values else ""
+
+
+def _llm_provider_id_normalized(llm_provider_id: str) -> str:
+    return (llm_provider_id or "openai").strip().lower().replace(" ", "_")
+
+
+def _llm_provider_config_keys(llm_provider_id: str) -> tuple[str, ...]:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    return CENARA_LLM_PROVIDER_CONFIG_KEYS.get(provider_id, (f"{provider_id}_api_key",))
+
+
+def _llm_provider_env_values(llm_provider_id: str) -> list[str]:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    return _secret_values_from_env_names(CENARA_LLM_PROVIDER_ENV_ALIASES.get(provider_id, ()))
+
+
+def _llm_provider_secret(llm_provider_id: str) -> str:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    if provider_id == "ollama":
+        return "local"
+    env_values = _llm_provider_env_values(provider_id)
+    if env_values:
+        return env_values[0]
+    if provider_id in CENARA_LLM_PROVIDER_CONFIG_KEYS:
+        session_value = _provider_secret_from_session((f"{provider_id}_api_key_input",))
+        if session_value:
+            return session_value
+    for cfg_key in _llm_provider_config_keys(provider_id):
+        config_values = _normalize_secret_values(config.app.get(cfg_key))
+        if config_values:
+            return config_values[0]
     return ""
 
 
 def _provider_secret(provider: str, session_keys=(), config_value=None) -> str:
-    return (
-        _provider_secret_from_env(provider)
-        or _provider_secret_from_session(session_keys)
-        or (_normalize_secret_values(config_value)[0] if _normalize_secret_values(config_value) else "")
-    )
+    values = _provider_secret_list(provider, session_keys=session_keys, config_value=config_value)
+    return values[0] if values else ""
 
 
 def _provider_secret_list(provider: str, session_keys=(), config_value=None) -> list[str]:
-    secret = _provider_secret(provider, session_keys=session_keys, config_value=config_value)
-    return [secret] if secret else []
+    return _dedupe_preserving_order(
+        _provider_secret_values_from_env(provider)
+        + _provider_secret_values_from_session(session_keys)
+        + _normalize_secret_values(config_value)
+    )
+
+
+def _remember_env_runtime_value(section: str, key: str, values) -> None:
+    env_values = _dedupe_preserving_order(values)
+    if env_values:
+        CENARA_ENV_RUNTIME_VALUES.setdefault(section, {})[key] = env_values
+
+
+def _strip_env_runtime_values(value, env_values):
+    if isinstance(value, (list, tuple, set)):
+        filtered = [item for item in _normalize_secret_values(value) if item not in env_values]
+        return filtered
+    values = _normalize_secret_values(value)
+    filtered = [item for item in values if item not in env_values]
+    if isinstance(value, str) and "," in value:
+        return ",".join(filtered)
+    return filtered[0] if filtered else ""
+
+
+def _install_cenara_safe_config_save() -> None:
+    if getattr(config, "_cenara_safe_save_installed", False):
+        return
+    original_save_config = config.save_config
+
+    def safe_save_config(*args, **kwargs):
+        restore_values = {"app": {}, "elevenlabs": {}}
+        for section_name, env_keys in CENARA_ENV_RUNTIME_VALUES.items():
+            section = getattr(config, section_name)
+            for key, env_values in env_keys.items():
+                restore_values[section_name][key] = section.get(key)
+                section[key] = _strip_env_runtime_values(section.get(key), env_values)
+        try:
+            return original_save_config(*args, **kwargs)
+        finally:
+            for section_name, section_values in restore_values.items():
+                section = getattr(config, section_name)
+                for key, value in section_values.items():
+                    section[key] = value
+
+    config.save_config = safe_save_config
+    config._cenara_safe_save_installed = True
 
 
 def cenara_apply_env_provider_keys() -> None:
     """Expose Railway env keys to the runtime config without printing their values."""
-    openai_key = _provider_secret("openai", ("openai_api_key_input",), config.app.get("openai_api_key"))
-    if openai_key:
-        config.app["openai_api_key"] = openai_key
+    _install_cenara_safe_config_save()
+    llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
+    llm_env_values = _llm_provider_env_values(llm_provider_id)
+    if llm_env_values:
+        llm_cfg_key = _llm_provider_config_keys(llm_provider_id)[0]
+        config.app[llm_cfg_key] = llm_env_values[0]
+        _remember_env_runtime_value("app", llm_cfg_key, llm_env_values)
         config.app["llm_provider"] = config.app.get("llm_provider") or "openai"
     provider_config_map = {
         "pexels": "pexels_api_keys",
@@ -468,9 +588,12 @@ def cenara_apply_env_provider_keys() -> None:
         "coverr": "coverr_api_keys",
     }
     for provider, cfg_key in provider_config_map.items():
+        env_values = _provider_secret_values_from_env(provider)
         keys = _provider_secret_list(provider, config_value=config.app.get(cfg_key))
         if keys:
             config.app[cfg_key] = keys
+        _remember_env_runtime_value("app", cfg_key, env_values)
+    elevenlabs_env_values = _provider_secret_values_from_env("elevenlabs")
     elevenlabs_key = _provider_secret(
         "elevenlabs",
         ("elevenlabs_api_key_input",),
@@ -478,6 +601,7 @@ def cenara_apply_env_provider_keys() -> None:
     )
     if elevenlabs_key:
         config.elevenlabs["api_key"] = elevenlabs_key
+    _remember_env_runtime_value("elevenlabs", "api_key", elevenlabs_env_values)
 
 
 cenara_apply_env_provider_keys()
@@ -579,10 +703,8 @@ def cenara_status_label(status: str) -> str:
     }.get(status, status)
 
 def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
-    llm_provider_id = (config.app.get("llm_provider") or "openai").lower()
-    llm_ok = llm_provider_id == "ollama" or _has_configured_secret(
-        _provider_secret("openai", ("openai_api_key_input",), config.app.get(f"{llm_provider_id}_api_key"))
-    )
+    llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
+    llm_ok = _has_configured_secret(_llm_provider_secret(llm_provider_id))
     pexels_ok = _has_configured_secret(_provider_secret_list("pexels", config_value=config.app.get("pexels_api_keys")))
     pixabay_ok = _has_configured_secret(_provider_secret_list("pixabay", config_value=config.app.get("pixabay_api_keys")))
     coverr_ok = _has_configured_secret(_provider_secret_list("coverr", config_value=config.app.get("coverr_api_keys")))
@@ -648,7 +770,7 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
     if readiness and readiness.get("LLM", ("missing", ""))[0] == "missing":
-        errors.append("Configure OPENAI_API_KEY no Railway ou na Central de Provedores.")
+        errors.append("Configure a chave do provedor LLM selecionado no Railway ou escolha OpenAI/Ollama.")
     if payload.video_source == "pexels" and (not readiness or readiness.get("Pexels", ("missing", ""))[0] != "configured"):
         errors.append("Configure PEXELS_API_KEY ou escolha mídia local.")
     if payload.video_source == "pixabay" and (not readiness or readiness.get("Pixabay", ("missing", ""))[0] != "configured"):
