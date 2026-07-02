@@ -801,7 +801,11 @@ if not config.app.get("hide_config", False):
                 st.info(tips)
 
             st_llm_api_key = st.text_input(
-                tr("API Key"), value="", type="password", placeholder="Cole uma nova chave para atualizar"
+                tr("API Key"),
+                value="",
+                type="password",
+                placeholder="Cole uma nova chave para atualizar",
+                key=f"{llm_provider}_api_key_input",
             )
             st_llm_base_url = st.text_input(tr("Base Url"), value=llm_base_url)
             st_llm_model_name = ""
@@ -896,20 +900,40 @@ if not config.app.get("hide_config", False):
                 with provider_col:
                     st.markdown(_provider_status_html(provider_label, configured, help_url), unsafe_allow_html=True)
 
-            pexels_api_key = st.text_input(
-                tr("Pexels API Key"), value="", type="password", placeholder="Cole uma nova chave Pexels"
-            )
-            save_keys_to_config("pexels_api_keys", pexels_api_key)
+            with st.form("cenara_provider_keys_update_form", clear_on_submit=True):
+                pexels_api_key = st.text_input(
+                    tr("Pexels API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave Pexels",
+                    key="pexels_api_key_update_input",
+                )
 
-            pixabay_api_key = st.text_input(
-                tr("Pixabay API Key"), value="", type="password", placeholder="Cole uma nova chave Pixabay"
-            )
-            save_keys_to_config("pixabay_api_keys", pixabay_api_key)
+                pixabay_api_key = st.text_input(
+                    tr("Pixabay API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave Pixabay",
+                    key="pixabay_api_key_update_input",
+                )
 
-            coverr_api_key = st.text_input(
-                tr("Coverr API Key"), value="", type="password", placeholder="Cole uma nova chave Coverr"
-            )
-            save_keys_to_config("coverr_api_keys", coverr_api_key)
+                coverr_api_key = st.text_input(
+                    tr("Coverr API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave Coverr",
+                    key="coverr_api_key_update_input",
+                )
+
+                provider_keys_submitted = st.form_submit_button(
+                    "Atualizar chaves de fontes"
+                )
+
+            if provider_keys_submitted:
+                save_keys_to_config("pexels_api_keys", pexels_api_key)
+                save_keys_to_config("pixabay_api_keys", pixabay_api_key)
+                save_keys_to_config("coverr_api_keys", coverr_api_key)
+                st.success("Chaves de fontes atualizadas quando valores foram informados.")
 
 llm_provider = config.app.get("llm_provider", "").lower()
 panel = st.columns(3)
