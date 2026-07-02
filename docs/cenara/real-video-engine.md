@@ -10,7 +10,7 @@ The provider center validates the following before generation:
 - Pexels and Pixabay: required only when selected as the video source.
 - Coverr: displayed as optional until selected; when selected, its key is required.
 - TTS: a voice must be configured unless a custom audio file is used by the runtime payload.
-- FFmpeg: required for MP4 rendering.
+- FFmpeg: required for MP4 rendering; readiness honors the runtime-compatible resolver, including configured `ffmpeg_path`, `IMAGEIO_FFMPEG_EXE`, `utils.get_ffmpeg_binary()`, PATH, and bundled imageio-ffmpeg when available.
 - ImageMagick: shown for subtitle/runtime diagnostics and treated as optional because FFmpeg can still render when subtitle styling does not require it.
 
 Raw API keys are never rendered in the status center, project history, or generation messages. Blank secret fields in the existing provider configuration continue to preserve saved values.
@@ -43,4 +43,4 @@ Do not change `Dockerfile` or `railway.json` for this validation unless a runtim
 
 ## Preview and download behavior
 
-After the engine returns, Cenara searches the task folder and storage tree for a real, non-empty `.mp4`. Only then it shows the Streamlit video preview, output path, and MP4 download button. If no MP4 exists, the attempt is saved as failed and the UI shows the diagnostic error instead of a fake success.
+After the engine returns, Cenara requires a real, non-empty `.mp4` tied to the current `task_id`: either under `storage/tasks/<task_id>` or returned by the engine from that same task folder. The broader storage scan is only for the recent-library display and is never used to mark the current run successful. Only after strict current-task validation does Cenara show the Streamlit video preview, output path, and MP4 download button. If no current-task MP4 exists, the attempt is saved as failed and the UI shows the diagnostic error instead of a fake success.

@@ -445,6 +445,37 @@ def _mask_secret(value: str) -> str:
     return f"{text[:3]}••••{text[-3:]}"
 
 
+
+def _is_executable_file(candidate) -> bool:
+    if not candidate:
+        return False
+    candidate_path = Path(str(candidate)).expanduser()
+    return candidate_path.is_file() and os.access(candidate_path, os.X_OK)
+
+
+def cenara_resolve_ffmpeg_binary():
+    candidates = [
+        config.app.get("ffmpeg_path"),
+        os.environ.get("IMAGEIO_FFMPEG_EXE"),
+    ]
+    try:
+        candidates.append(utils.get_ffmpeg_binary())
+    except Exception as exc:
+        logger.warning(f"failed to resolve FFmpeg via runtime resolver: {exc}")
+    candidates.append(shutil.which("ffmpeg"))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if str(candidate) == "ffmpeg":
+            system_ffmpeg = shutil.which("ffmpeg")
+            if system_ffmpeg:
+                return system_ffmpeg
+            continue
+        if _is_executable_file(candidate):
+            return str(Path(str(candidate)).expanduser())
+    return ""
+
 def cenara_status_label(status: str) -> str:
     return {
         "configured": "Configurado",
@@ -472,7 +503,8 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
         tts_ok = tts_ok and _has_configured_secret(config.app.get("mimo_api_key"))
     elif tts_server_id == "elevenlabs":
         tts_ok = tts_ok and _has_configured_secret(config.elevenlabs.get("api_key"))
-    render_ok = bool(shutil.which("ffmpeg"))
+    ffmpeg_binary = cenara_resolve_ffmpeg_binary()
+    render_ok = bool(ffmpeg_binary)
     imagemagick_ok = bool(shutil.which("magick") or shutil.which("convert"))
     return {
         "LLM": ("configured" if llm_ok else "missing", llm_provider_id),
@@ -481,7 +513,7 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
         "Coverr": ("configured" if coverr_ok else "optional", "fonte opcional"),
         "Fonte de vídeo": ("configured" if source_ok else "blocked", selected_video_source),
         "Voz/TTS": ("configured" if tts_ok else "blocked", tts_server_id),
-        "FFmpeg": ("configured" if render_ok else "blocked", shutil.which("ffmpeg") or "não encontrado"),
+        "FFmpeg": ("configured" if render_ok else "blocked", ffmpeg_binary or "não encontrado"),
         "ImageMagick": ("configured" if imagemagick_ok else "optional", shutil.which("magick") or shutil.which("convert") or "opcional"),
     }
 
@@ -533,14 +565,44 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         errors.append("Configure uma voz TTS ou envie um áudio personalizado.")
     return list(dict.fromkeys(errors))
 
+def _is_non_empty_mp4(path):
+    candidate = Path(path)
+    return candidate.suffix.lower() == ".mp4" and candidate.is_file() and candidate.stat().st_size > 0
+
+
+def _task_dir_for(task_id):
+    return Path(root_dir) / "storage" / "tasks" / str(task_id)
+
+
+def _is_path_inside(path, parent):
+    try:
+        Path(path).resolve().relative_to(Path(parent).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def cenara_find_task_mp4(task_id, engine_video_paths=None, limit=12):
+    task_dir = _task_dir_for(task_id)
+    candidates = []
+    if task_dir.exists():
+        candidates.extend(path for path in task_dir.rglob("*.mp4") if _is_non_empty_mp4(path))
+    for path in engine_video_paths or []:
+        candidate = Path(path)
+        if _is_non_empty_mp4(candidate) and _is_path_inside(candidate, task_dir):
+            candidates.append(candidate)
+    return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+
 def cenara_find_latest_mp4(task_id=None, limit=12):
+    if task_id:
+        return cenara_find_task_mp4(task_id, limit=limit)
     roots = [Path(root_dir) / "storage" / "tasks", Path(root_dir) / "storage"]
     candidates = []
     for base in roots:
         if not base.exists():
             continue
-        search_base = base / str(task_id) if task_id and (base / str(task_id)).exists() else base
-        candidates.extend(path for path in search_base.rglob("*.mp4") if path.is_file() and path.stat().st_size > 0)
+        candidates.extend(path for path in base.rglob("*.mp4") if _is_non_empty_mp4(path))
     return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
 CENARA_PIPELINE_STAGES = [
@@ -585,9 +647,8 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
         stage = _cenara_stage_from_progress(progress)
         if status_box:
             status_box.write(stage)
-        latest = cenara_find_latest_mp4(task_id=task_id, limit=1)
-        if not latest and engine_result and engine_result.get("videos"):
-            latest = [Path(engine_result["videos"][0])]
+        engine_video_paths = engine_result.get("videos") if engine_result else []
+        latest = cenara_find_task_mp4(task_id=task_id, engine_video_paths=engine_video_paths, limit=1)
         if latest and latest[0].is_file() and latest[0].stat().st_size > 0:
             result.update(success=True, output_path=str(latest[0]), logs=[f"MP4 real encontrado: {latest[0]}"] )
         else:
@@ -656,7 +717,7 @@ def cenara_runtime_diagnostics():
     tasks_dir = Path(root_dir) / "storage" / "tasks"
     output_dir = Path(root_dir) / "storage"
     return {
-        "FFmpeg": shutil.which("ffmpeg") or "não encontrado",
+        "FFmpeg": cenara_resolve_ffmpeg_binary() or "não encontrado",
         "ImageMagick": shutil.which("magick") or shutil.which("convert") or "opcional/não encontrado",
         "Pasta de saída": "ok" if output_dir.exists() and os.access(output_dir, os.W_OK) else "indisponível",
         "Pasta de tarefas": "ok" if tasks_dir.exists() or os.access(output_dir, os.W_OK) else "será criada ao gerar",
@@ -714,6 +775,8 @@ def cenara_render_command_center(params, selected_tts_server):
         st.session_state["video_script"] = payload.video_script
         st.session_state["video_terms"] = payload.video_terms
         readiness = cenara_provider_readiness(payload.video_source, selected_tts_server)
+        if payload.voice_name or payload.custom_audio_file:
+            readiness["Voz/TTS"] = ("configured", "voz do formulário" if payload.voice_name else "áudio personalizado")
         errors = cenara_validate_generation_payload(payload, readiness=readiness)
         if errors:
             for error in errors:
@@ -2367,25 +2430,20 @@ if start_button:
     scroll_to_bottom()
 
     result = cenara_trigger_real_generation(task_id=task_id, payload=params)
-    if not result or "videos" not in result:
-        st.error(tr("Video Generation Failed"))
-        logger.error(tr("Video Generation Failed"))
+    if not result or not result.get("success"):
+        error = (result or {}).get("error") or tr("Video Generation Failed")
+        st.error(error)
+        logger.error(error)
         scroll_to_bottom()
         st.stop()
 
-    video_files = result.get("videos", [])
-    latest_mp4s = cenara_find_latest_mp4(task_id=task_id, limit=1)
-    if not latest_mp4s:
-        st.error("A geração terminou, mas nenhum MP4 foi encontrado. Verifique o diretório de saída.")
-        scroll_to_bottom()
-        st.stop()
-    st.session_state["cenara_latest_mp4"] = str(latest_mp4s[0])
+    video_files = [result["output_path"]]
+    st.session_state["cenara_latest_mp4"] = result["output_path"]
     st.success("Vídeo real gerado com sucesso.")
     try:
-        if video_files:
-            player_cols = st.columns(len(video_files) * 2 + 1)
-            for i, url in enumerate(video_files):
-                player_cols[i * 2 + 1].video(url)
+        player_cols = st.columns(len(video_files) * 2 + 1)
+        for i, url in enumerate(video_files):
+            player_cols[i * 2 + 1].video(url)
     except Exception:
         pass
 
