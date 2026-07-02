@@ -13,6 +13,18 @@ from app.services import state as sm
 from app.utils import file_security, utils
 
 
+def derive_safe_video_terms(*texts, limit: int = 6):
+    stop_words = {"para", "com", "uma", "que", "seu", "sua", "dos", "das", "por", "the", "and", "you", "your", "with"}
+    words = []
+    source = " ".join(str(text or "") for text in texts)
+    for word in re.findall(r"[A-Za-zÀ-ÿ0-9]{3,}", source.lower()):
+        if word not in words and word not in stop_words:
+            words.append(word)
+        if len(words) >= limit:
+            break
+    return words
+
+
 def generate_script(task_id, params):
     logger.info("\n\n## generating video script")
     video_script = params.video_script.strip()
@@ -38,7 +50,17 @@ def generate_script(task_id, params):
 def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
+    manual_script_mode = bool((params.video_script or "").strip())
+    if not video_terms and manual_script_mode:
+        video_terms = derive_safe_video_terms(params.video_subject, video_script)
+        if video_terms:
+            params.video_terms = video_terms
+            logger.info("manual script mode: derived local video terms without LLM")
     if not video_terms:
+        if manual_script_mode:
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+            logger.error("Informe palavras-chave manuais para buscar mídia sem chamar o LLM.")
+            return None
         # 开启素材按文案顺序匹配后，关键词本身也必须按脚本叙事顺序生成；
         # 否则后续即使顺序下载和顺序拼接，也只能复用一组全局主题词，
         # 无法改善“后面内容的画面提前出现”的问题。
@@ -65,7 +87,7 @@ def generate_terms(task_id, params, video_script):
 
     # 可选的 TwelveLabs Marengo 语义重排：未启用时返回原顺序，无任何副作用。
     # 顺序匹配模式下关键词顺序本身就是脚本叙事顺序，必须保持原样，故跳过。
-    if not params.match_materials_to_script:
+    if not params.match_materials_to_script and not manual_script_mode:
         video_terms = twelvelabs.rerank_terms_by_subject(
             video_subject=params.video_subject,
             search_terms=video_terms,

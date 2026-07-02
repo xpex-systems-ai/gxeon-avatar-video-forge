@@ -4,6 +4,8 @@ import sys
 import webbrowser
 import json
 import time
+import re
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -700,7 +702,57 @@ def cenara_status_label(status: str) -> str:
         "missing": "Ausente",
         "optional": "Opcional",
         "blocked": "Bloqueado",
+        "quota_blocked": "Configurado / Bloqueado por cota",
+        "auth_failed": "Configurado / Falha de autenticação",
+        "pending": "Configurado / Teste pendente",
     }.get(status, status)
+
+
+def cenara_classify_provider_error(exc_or_text):
+    text = str(exc_or_text or "").lower()
+    if any(token in text for token in ["insufficient_quota", "quota", "billing", "429", "rate limit", "rate_limit"]):
+        return {
+            "code": "LLM_PROVIDER_BLOCKED",
+            "status": "quota_blocked",
+            "message": "A chave LLM está configurada, mas o provedor bloqueou a geração por cota, billing ou limite de uso.",
+            "next_action": "Use roteiro manual com palavras-chave, ajuste billing/cota do provedor LLM ou troque a chave antes do modo automático.",
+        }
+    if any(token in text for token in ["authentication", "unauthorized", "invalid api key", "401", "403"]):
+        return {
+            "code": "LLM_PROVIDER_BLOCKED",
+            "status": "auth_failed",
+            "message": "A chave LLM está configurada, mas falhou na autenticação do provedor.",
+            "next_action": "Revise a chave do provedor LLM no Railway sem expor o valor no navegador.",
+        }
+    return {
+        "code": "GENERATION_FAILED",
+        "status": "blocked",
+        "message": "A geração real falhou antes de produzir um MP4 novo e não vazio.",
+        "next_action": "Verifique o estágio com falha e tente novamente com roteiro/manual, mídia e voz configurados.",
+    }
+
+def cenara_secret_fingerprint(value: str) -> str:
+    normalized = str(value or "").strip()
+    if _is_missing_secret_value(normalized):
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def cenara_reset_llm_blocked_status_if_changed(provider_id: str, key_value: str = "") -> None:
+    normalized_provider = _llm_provider_id_normalized(provider_id)
+    last_provider = st.session_state.get("cenara_llm_provider_status_provider")
+    if last_provider and last_provider != normalized_provider:
+        st.session_state.pop("cenara_llm_provider_status", None)
+    st.session_state["cenara_llm_provider_status_provider"] = normalized_provider
+
+    fingerprint = cenara_secret_fingerprint(key_value)
+    if not fingerprint:
+        return
+    last_fingerprint = st.session_state.get("cenara_llm_provider_key_fingerprint")
+    if last_fingerprint and last_fingerprint != fingerprint:
+        st.session_state.pop("cenara_llm_provider_status", None)
+    st.session_state["cenara_llm_provider_key_fingerprint"] = fingerprint
+
 
 def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
     llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
@@ -726,8 +778,12 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
     ffmpeg_binary = cenara_resolve_ffmpeg_binary()
     render_ok = bool(ffmpeg_binary)
     imagemagick_ok = bool(shutil.which("magick") or shutil.which("convert"))
+    llm_status = "configured" if llm_ok else "missing"
+    last_llm_status = st.session_state.get("cenara_llm_provider_status")
+    if llm_ok and last_llm_status in ["quota_blocked", "auth_failed"]:
+        llm_status = last_llm_status
     return {
-        "LLM": ("configured" if llm_ok else "missing", llm_provider_id),
+        "LLM": (llm_status, llm_provider_id),
         "Pexels": ("configured" if pexels_ok else "missing", "fonte de vídeo"),
         "Pixabay": ("configured" if pixabay_ok else "missing", "fonte de vídeo"),
         "Coverr": ("configured" if coverr_ok else "optional", "fonte opcional"),
@@ -737,9 +793,22 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
         "ImageMagick": ("configured" if imagemagick_ok else "optional", shutil.which("magick") or shutil.which("convert") or "opcional"),
     }
 
+def cenara_derive_manual_keywords(form):
+    terms = tm.derive_safe_video_terms(
+        form.get("tema"),
+        form.get("nicho"),
+        form.get("publico"),
+        form.get("promessa"),
+        form.get("cta"),
+        form.get("manual_script"),
+        form.get("roteiro_manual"),
+    )
+    return ", ".join(terms)
+
+
 def cenara_build_generation_payload(form, current_params):
     tema = (form.get("tema") or "").strip()
-    roteiro = (form.get("roteiro_manual") or "").strip()
+    roteiro = (form.get("manual_script") or form.get("roteiro_manual") or "").strip()
     contexto = [
         f"Nicho: {form.get('nicho','').strip()}" if form.get("nicho") else "",
         f"Público-alvo: {form.get('publico','').strip()}" if form.get("publico") else "",
@@ -755,7 +824,8 @@ def cenara_build_generation_payload(form, current_params):
         script = f"{script.rstrip()}\n\nCTA: {form.get('cta').strip()}"
     current_params.video_subject = subject.strip()
     current_params.video_script = script.strip()
-    current_params.video_terms = (form.get("palavras_chave") or current_params.video_terms or tema).strip()
+    manual_keywords = (form.get("manual_keywords") or form.get("palavras_chave") or "").strip()
+    current_params.video_terms = (manual_keywords or (cenara_derive_manual_keywords(form) if roteiro else current_params.video_terms or tema)).strip()
     current_params.video_source = form.get("fonte_video") or current_params.video_source
     current_params.video_clip_duration = int(form.get("duracao") or current_params.video_clip_duration or 3)
     current_params.video_aspect = {"9:16": VideoAspect.portrait, "16:9": VideoAspect.landscape, "1:1": VideoAspect.portrait}.get(form.get("formato"), current_params.video_aspect)
@@ -769,8 +839,13 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         errors.append("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if readiness and readiness.get("LLM", ("missing", ""))[0] == "missing":
-        errors.append("Configure a chave do provedor LLM selecionado no Railway ou escolha OpenAI/Ollama.")
+    if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
+        errors.append("Informe palavras-chave manuais ou preencha tema/nicho/público/promessa/CTA para a Cenara derivar termos seguros sem LLM.")
+    llm_status = readiness.get("LLM", ("missing", ""))[0] if readiness else "missing"
+    if not payload.video_script and llm_status == "missing":
+        errors.append("Configure a chave do provedor LLM selecionado ou preencha o roteiro manual para dispensar a geração por LLM.")
+    if not payload.video_script and llm_status in ["quota_blocked", "auth_failed"]:
+        errors.append("O LLM está configurado, mas bloqueado. Preencha o roteiro manual para continuar sem chamar o LLM.")
     if payload.video_source == "pexels" and (not readiness or readiness.get("Pexels", ("missing", ""))[0] != "configured"):
         errors.append("Configure PEXELS_API_KEY ou escolha mídia local.")
     if payload.video_source == "pixabay" and (not readiness or readiness.get("Pixabay", ("missing", ""))[0] != "configured"):
@@ -827,62 +902,127 @@ def cenara_find_latest_mp4(task_id=None, limit=12):
         candidates.extend(path for path in base.rglob("*.mp4") if _is_non_empty_mp4(path))
     return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
-CENARA_PIPELINE_STAGES = [
-    "validando provedores",
-    "preparando roteiro",
-    "buscando mídia",
-    "gerando voz",
-    "montando cenas",
-    "aplicando legendas",
-    "renderizando MP4",
-    "finalizado",
-]
+CENARA_PIPELINE_STAGES = ["queued", "script", "media", "voice", "subtitles", "render", "completed", "failed"]
+
+
+def cenara_task_status_path(task_id):
+    task_dir = _task_dir_for(task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return task_dir / "cenara_status.json"
+
+
+def cenara_write_task_status(task_id, **updates):
+    status_path = cenara_task_status_path(task_id)
+    current = {}
+    if status_path.exists():
+        try:
+            current = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            current = {}
+    safe = {k: v for k, v in updates.items() if k not in {"exception", "raw_error", "api_key"}}
+    safe.update({"task_id": task_id, "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"})
+    current.update(safe)
+    status_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    return current
+
+
+def cenara_read_task_status(task_id):
+    try:
+        return json.loads(cenara_task_status_path(task_id).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _cenara_stage_from_progress(progress):
     if progress >= 100:
-        return "finalizado"
+        return "completed"
     if progress >= 50:
-        return "renderizando MP4"
+        return "render"
     if progress >= 40:
-        return "montando cenas"
+        return "media"
     if progress >= 30:
-        return "aplicando legendas"
+        return "subtitles"
     if progress >= 20:
-        return "gerando voz"
+        return "voice"
     if progress >= 10:
-        return "buscando mídia"
-    return "preparando roteiro"
+        return "media"
+    return "script"
 
 
 def cenara_trigger_real_generation(task_id, payload, status_box=None):
     logger.info(f"Cenara geração real iniciada task_id={task_id}")
-    started_at = time.time()
+    task_start = time.time()
+    started_at = task_start
     result = {"success": False, "task_id": task_id, "output_path": "", "error": "", "logs": []}
+    if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
+        derived_terms = cenara_derive_manual_keywords({
+            "tema": payload.video_subject,
+            "manual_script": payload.video_script,
+        })
+        if derived_terms:
+            payload.video_terms = derived_terms
+        else:
+            result.update(
+                error="Informe palavras-chave manuais para buscar mídia sem chamar o LLM.",
+                safe_error_code="MANUAL_TERMS_REQUIRED",
+                next_action="Preencha Palavras-chave opcionais com termos de busca como fitness, treino em casa, saúde.",
+            )
+            cenara_write_task_status(task_id, state="failed", failed_stage="media", safe_error_code="MANUAL_TERMS_REQUIRED", safe_message=result["error"], next_action=result["next_action"], script_ready=True, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos")
+            return result
+    cenara_write_task_status(task_id, state="queued", failed_stage="", safe_error_code="", safe_message="", next_action="", script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
     try:
         if status_box:
             status_box.write(f"task_id: {task_id}")
-            status_box.write("validando provedores")
+            status_box.write("queued")
+            if payload.video_script:
+                status_box.write("script manual recebido; LLM não será chamado para roteiro")
+        cenara_write_task_status(task_id, state="script", script_ready=bool(payload.video_script), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
         engine_result = tm.start(task_id=task_id, params=payload)
         task_state = sm.state.get_task(task_id) or {}
         progress = int(task_state.get("progress") or 0)
         stage = _cenara_stage_from_progress(progress)
         if status_box:
             status_box.write(stage)
+        cenara_write_task_status(task_id, state=stage, script_ready=bool(task_state.get("script") or payload.video_script), media_ready=bool(task_state.get("materials")), audio_ready=bool(task_state.get("audio_file")), ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
         engine_video_paths = engine_result.get("videos") if engine_result else []
         latest = cenara_find_task_mp4(task_id=task_id, engine_video_paths=engine_video_paths, limit=1)
         if latest and latest[0].is_file() and latest[0].stat().st_size > 0 and latest[0].stat().st_mtime >= started_at:
             result.update(success=True, output_path=str(latest[0]), logs=[f"MP4 real encontrado: {latest[0]}"] )
+            cenara_write_task_status(task_id, state="completed", output_path=str(latest[0]), media_ready=True, audio_ready=True)
         else:
-            result["error"] = "A geração terminou, mas nenhum MP4 real novo e não vazio foi encontrado no diretório da tarefa."
+            diagnostics = cenara_read_task_status(task_id)
+            failed_stage = diagnostics.get("state") if diagnostics.get("state") != "completed" else "render"
+            provider_error = getattr(llm, "LAST_PROVIDER_ERROR", "")
+            classified = cenara_classify_provider_error(provider_error) if provider_error else None
+            if classified and classified["code"] == "LLM_PROVIDER_BLOCKED" and not payload.video_script:
+                st.session_state["cenara_llm_provider_status"] = classified["status"]
+                result["error"] = classified["message"]
+                result["safe_error_code"] = classified["code"]
+                result["next_action"] = classified["next_action"]
+                cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=False, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="")
+            else:
+                result["error"] = "A geração terminou, mas nenhum MP4 real novo e não vazio foi encontrado no diretório da tarefa."
+                result["diagnostics"] = diagnostics
+                cenara_write_task_status(task_id, state="failed", failed_stage=failed_stage, safe_error_code="NO_CURRENT_TASK_MP4", safe_message=result["error"], next_action="Revise roteiro, mídia, voz e FFmpeg; Cenara não usará MP4 antigo como sucesso.", output_path="")
     except Exception as exc:
-        logger.exception(f"Cenara geração real falhou task_id={task_id}: {exc}")
-        result["error"] = f"Falha no motor de geração real: {exc}"
+        classified = cenara_classify_provider_error(exc)
+        logger.error(f"Cenara geração real falhou task_id={task_id}: {classified['safe_message'] if 'safe_message' in classified else classified['message']}")
+        if classified["code"] == "LLM_PROVIDER_BLOCKED":
+            st.session_state["cenara_llm_provider_status"] = classified["status"]
+        result["error"] = classified["message"]
+        result["safe_error_code"] = classified["code"]
+        result["next_action"] = classified["next_action"]
+        cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="")
     result["duration_seconds"] = round(time.time() - started_at, 2)
     return result
 
 def cenara_render_real_preview(mp4_path):
     st.subheader("Preview Real")
+    current_task_id = st.session_state.get("cenara_latest_task_id")
+    if current_task_id:
+        task_status = cenara_read_task_status(current_task_id)
+        if task_status:
+            st.json({k: task_status.get(k) for k in ["state", "failed_stage", "safe_error_code", "safe_message", "next_action", "script_ready", "media_ready", "audio_ready", "ffmpeg_available", "output_path"] if k in task_status})
     if not mp4_path:
         st.info("Nenhum vídeo real gerado ainda.")
         return
@@ -992,7 +1132,7 @@ def cenara_render_command_center(params, selected_tts_server):
         st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>Ativas</strong></div></div></div>', unsafe_allow_html=True)
         st.info("Os controles completos de mídia, voz, música, subtítulos, transições e renderização continuam disponíveis em Controles avançados MoneyPrinterTurbo.")
     if submitted:
-        form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
+        form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "manual_script": roteiro_manual, "manual_keywords": palavras_chave, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
         payload = cenara_build_generation_payload(form, params)
         st.session_state["video_subject"] = payload.video_subject
         st.session_state["video_script"] = payload.video_script
@@ -1008,7 +1148,7 @@ def cenara_render_command_center(params, selected_tts_server):
         task_id = str(uuid4())
         st.info(f"Geração iniciada. Acompanhe o progresso abaixo. task_id: {task_id}")
         status_box = st.status("validando provedores", expanded=True)
-        for stage in CENARA_PIPELINE_STAGES[:-1]:
+        for stage in CENARA_PIPELINE_STAGES[:-2]:
             status_box.write(stage)
         result = cenara_trigger_real_generation(task_id, payload, status_box=status_box)
         if result["success"]:
@@ -1024,6 +1164,8 @@ def cenara_render_command_center(params, selected_tts_server):
             status_box.update(label="falhou", state="error")
             cenara_save_project_record(task_id, payload, None, "failed", result.get("error", "Falha desconhecida"))
             st.error(result.get("error") or "A geração falhou sem mensagem detalhada.")
+            if result.get("next_action"):
+                st.info(result["next_action"])
     with right:
         st.markdown('<div class="cenara-workspace-card"><div class="cenara-card-kicker">03 · Preview & Output</div><h3>Render real</h3></div>', unsafe_allow_html=True)
         latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else None
@@ -1230,6 +1372,7 @@ if not config.app.get("hide_config", False):
             ):
                 del st.session_state["llm_provider_select"]
 
+            previous_llm_provider = _llm_provider_id_normalized(config.app.get("llm_provider", "openai"))
             llm_provider = st.selectbox(
                 tr("LLM Provider"),
                 options=llm_provider_ids,
@@ -1237,6 +1380,9 @@ if not config.app.get("hide_config", False):
                 format_func=lambda provider_id: llm_provider_labels[provider_id],
                 key="llm_provider_select",
             )
+            if _llm_provider_id_normalized(llm_provider) != previous_llm_provider:
+                st.session_state.pop("cenara_llm_provider_status", None)
+            cenara_reset_llm_blocked_status_if_changed(llm_provider)
             llm_helper = st.container()
             config.app["llm_provider"] = llm_provider
 
@@ -1563,6 +1709,7 @@ if not config.app.get("hide_config", False):
                 st_llm_model_name = None
 
             if st_llm_api_key:
+                cenara_reset_llm_blocked_status_if_changed(llm_provider, st_llm_api_key)
                 config.app[f"{llm_provider}_api_key"] = st_llm_api_key
             if st_llm_base_url:
                 config.app[f"{llm_provider}_base_url"] = st_llm_base_url
@@ -1573,6 +1720,7 @@ if not config.app.get("hide_config", False):
                     tr("Secret Key"), value="", type="password", placeholder="Cole uma nova secret key para atualizar"
                 )
                 if st_llm_secret_key:
+                    cenara_reset_llm_blocked_status_if_changed(llm_provider, st_llm_secret_key)
                     config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
 
             if llm_provider == "cloudflare":

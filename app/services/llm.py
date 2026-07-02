@@ -11,6 +11,21 @@ from openai.types.chat import ChatCompletion
 from app.config import config
 
 _max_retries = 5
+LAST_PROVIDER_ERROR = ""
+_PROVIDER_ERROR_TOKENS = (
+    "error:",
+    "insufficient_quota",
+    "quota",
+    "billing",
+    "429",
+    "rate limit",
+    "rate_limit",
+    "authentication",
+    "unauthorized",
+    "invalid api key",
+    "401",
+    "403",
+)
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _DEPRECATED_GEMINI_MODELS = {"gemini-pro", "gemini-1.0-pro"}
 MIN_SCRIPT_PARAGRAPH_NUMBER = 1
@@ -667,6 +682,14 @@ def build_script_prompt(
     return prompt
 
 
+def _looks_like_provider_error(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return bool(normalized) and (
+        normalized.startswith("error:")
+        or any(token in normalized for token in _PROVIDER_ERROR_TOKENS)
+    )
+
+
 def generate_script(
     video_subject: str,
     language: str = "",
@@ -688,6 +711,8 @@ def generate_script(
         video_script_prompt=video_script_prompt,
         custom_system_prompt=custom_system_prompt,
     )
+    global LAST_PROVIDER_ERROR
+    LAST_PROVIDER_ERROR = ""
     final_script = ""
     logger.info(
         "generating video script: "
@@ -719,23 +744,36 @@ def generate_script(
         try:
             response = _generate_response(prompt=prompt)
             if response:
-                final_script = format_response(response)
+                response_text = str(response).strip()
+                if _looks_like_provider_error(response_text):
+                    safe_error_text = _sanitize_error_message(response_text)
+                    LAST_PROVIDER_ERROR = safe_error_text
+                    logger.error(f"failed to generate script: {safe_error_text}")
+                    final_script = ""
+                else:
+                    final_script = format_response(response_text)
             else:
                 logging.error("gpt returned an empty response")
 
             # g4f may return an error message
             if final_script and "当日额度已消耗完" in final_script:
-                raise ValueError(final_script)
+                LAST_PROVIDER_ERROR = _sanitize_error_message(final_script)
+                raise ValueError(LAST_PROVIDER_ERROR)
 
             if final_script:
                 break
         except Exception as e:
-            logger.error(f"failed to generate script: {e}")
+            LAST_PROVIDER_ERROR = _sanitize_error_message(e)
+            logger.error(f"failed to generate script: {LAST_PROVIDER_ERROR}")
 
         if i < _max_retries:
             logger.warning(f"failed to generate video script, trying again... {i + 1}")
-    if "Error: " in final_script:
-        logger.error(f"failed to generate video script: {final_script}")
+    if _looks_like_provider_error(final_script):
+        LAST_PROVIDER_ERROR = _sanitize_error_message(final_script.strip()) or LAST_PROVIDER_ERROR
+        logger.error(f"failed to generate video script: {LAST_PROVIDER_ERROR}")
+        return ""
+    if not final_script and LAST_PROVIDER_ERROR:
+        logger.error(f"failed to generate video script: {LAST_PROVIDER_ERROR}")
     else:
         logger.success(f"completed: \n{final_script}")
     return final_script.strip()
