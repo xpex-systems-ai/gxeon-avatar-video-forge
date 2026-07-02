@@ -383,10 +383,104 @@ support_locales = [
 
 
 
-def _has_configured_secret(value) -> bool:
+CENARA_PROVIDER_ENV_ALIASES = {
+    "openai": ("OPENAI_API_KEY", "OPENAI_KEY"),
+    "pexels": ("PEXELS_API_KEY",),
+    "pixabay": ("PIXABAY_API_KEY",),
+    "coverr": ("COVER_API_KEY", "COVERR_API_KEY"),
+    "elevenlabs": ("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+}
+
+CENARA_MASKED_SECRET_MARKERS = (
+    "cole sua nova chave",
+    "paste your new key",
+    "sua chave",
+    "your api key",
+    "api key",
+    "password",
+    "secret",
+)
+
+
+def _is_missing_secret_value(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if any(marker in lowered for marker in CENARA_MASKED_SECRET_MARKERS):
+        return True
+    visible = text.replace("•", "").replace("*", "").replace("x", "").replace("X", "").strip()
+    return not visible
+
+
+def _normalize_secret_values(value) -> list[str]:
     if isinstance(value, (list, tuple, set)):
-        return any(str(item).strip() for item in value)
-    return bool(str(value or "").strip())
+        candidates = value
+    elif isinstance(value, str) and "," in value:
+        candidates = value.split(",")
+    else:
+        candidates = [value]
+    return [str(item).strip() for item in candidates if not _is_missing_secret_value(item)]
+
+
+def _has_configured_secret(value) -> bool:
+    return bool(_normalize_secret_values(value))
+
+
+def _provider_secret_from_env(provider: str) -> str:
+    for env_name in CENARA_PROVIDER_ENV_ALIASES.get(provider, ()):
+        env_value = os.environ.get(env_name)
+        if not _is_missing_secret_value(env_value):
+            return env_value.strip()
+    return ""
+
+
+def _provider_secret_from_session(keys) -> str:
+    for key in keys:
+        session_value = st.session_state.get(key)
+        if not _is_missing_secret_value(session_value):
+            return str(session_value).strip()
+    return ""
+
+
+def _provider_secret(provider: str, session_keys=(), config_value=None) -> str:
+    return (
+        _provider_secret_from_env(provider)
+        or _provider_secret_from_session(session_keys)
+        or (_normalize_secret_values(config_value)[0] if _normalize_secret_values(config_value) else "")
+    )
+
+
+def _provider_secret_list(provider: str, session_keys=(), config_value=None) -> list[str]:
+    secret = _provider_secret(provider, session_keys=session_keys, config_value=config_value)
+    return [secret] if secret else []
+
+
+def cenara_apply_env_provider_keys() -> None:
+    """Expose Railway env keys to the runtime config without printing their values."""
+    openai_key = _provider_secret("openai", ("openai_api_key_input",), config.app.get("openai_api_key"))
+    if openai_key:
+        config.app["openai_api_key"] = openai_key
+        config.app["llm_provider"] = config.app.get("llm_provider") or "openai"
+    provider_config_map = {
+        "pexels": "pexels_api_keys",
+        "pixabay": "pixabay_api_keys",
+        "coverr": "coverr_api_keys",
+    }
+    for provider, cfg_key in provider_config_map.items():
+        keys = _provider_secret_list(provider, config_value=config.app.get(cfg_key))
+        if keys:
+            config.app[cfg_key] = keys
+    elevenlabs_key = _provider_secret(
+        "elevenlabs",
+        ("elevenlabs_api_key_input",),
+        config.elevenlabs.get("api_key"),
+    )
+    if elevenlabs_key:
+        config.elevenlabs["api_key"] = elevenlabs_key
+
+
+cenara_apply_env_provider_keys()
 
 
 def _provider_status_html(label: str, configured: bool, help_url: str) -> str:
@@ -486,10 +580,12 @@ def cenara_status_label(status: str) -> str:
 
 def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
     llm_provider_id = (config.app.get("llm_provider") or "openai").lower()
-    llm_ok = llm_provider_id == "ollama" or _has_configured_secret(config.app.get(f"{llm_provider_id}_api_key"))
-    pexels_ok = _has_configured_secret(config.app.get("pexels_api_keys"))
-    pixabay_ok = _has_configured_secret(config.app.get("pixabay_api_keys"))
-    coverr_ok = _has_configured_secret(config.app.get("coverr_api_keys"))
+    llm_ok = llm_provider_id == "ollama" or _has_configured_secret(
+        _provider_secret("openai", ("openai_api_key_input",), config.app.get(f"{llm_provider_id}_api_key"))
+    )
+    pexels_ok = _has_configured_secret(_provider_secret_list("pexels", config_value=config.app.get("pexels_api_keys")))
+    pixabay_ok = _has_configured_secret(_provider_secret_list("pixabay", config_value=config.app.get("pixabay_api_keys")))
+    coverr_ok = _has_configured_secret(_provider_secret_list("coverr", config_value=config.app.get("coverr_api_keys")))
     source_ok = {"pexels": pexels_ok, "pixabay": pixabay_ok, "coverr": coverr_ok, "local": True}.get(selected_video_source, False)
     tts_server_id = selected_tts_server or config.ui.get("tts_server", "azure-tts-v1")
     tts_ok = tts_server_id == voice.NO_VOICE_NAME or bool(config.ui.get("voice_name"))
@@ -502,7 +598,9 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
     elif tts_server_id == "mimo-tts":
         tts_ok = tts_ok and _has_configured_secret(config.app.get("mimo_api_key"))
     elif tts_server_id == "elevenlabs":
-        tts_ok = tts_ok and _has_configured_secret(config.elevenlabs.get("api_key"))
+        tts_ok = tts_ok and _has_configured_secret(
+            _provider_secret("elevenlabs", ("elevenlabs_api_key_input",), config.elevenlabs.get("api_key"))
+        )
     ffmpeg_binary = cenara_resolve_ffmpeg_binary()
     render_ok = bool(ffmpeg_binary)
     imagemagick_ok = bool(shutil.which("magick") or shutil.which("convert"))
@@ -549,18 +647,20 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         errors.append("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "pexels" and not _has_configured_secret(config.app.get("pexels_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "pixabay" and not _has_configured_secret(config.app.get("pixabay_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "coverr" and not _has_configured_secret(config.app.get("coverr_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if readiness and readiness.get("LLM", ("missing", ""))[0] == "missing":
+        errors.append("Configure OPENAI_API_KEY no Railway ou na Central de Provedores.")
+    if payload.video_source == "pexels" and (not readiness or readiness.get("Pexels", ("missing", ""))[0] != "configured"):
+        errors.append("Configure PEXELS_API_KEY ou escolha mídia local.")
+    if payload.video_source == "pixabay" and (not readiness or readiness.get("Pixabay", ("missing", ""))[0] != "configured"):
+        errors.append("Configure PIXABAY_API_KEY ou escolha mídia local.")
+    if payload.video_source == "coverr" and (not readiness or readiness.get("Coverr", ("optional", ""))[0] != "configured"):
+        errors.append("Configure COVER_API_KEY/COVERR_API_KEY ou escolha mídia local.")
     if readiness:
         blockers = [f"{label}: {detail}" for label, (status, detail) in readiness.items() if status == "blocked"]
         if blockers:
             errors.append("Geração bloqueada por provedor obrigatório ausente: " + "; ".join(blockers) + ".")
-        if readiness.get("LLM", ("missing", ""))[0] == "missing" and (not payload.video_script or (payload.video_source != "local" and not payload.video_terms)):
-            errors.append("Configure o provedor LLM ou informe roteiro manual e palavras-chave para evitar geração por IA.")
+        if readiness.get("Voz/TTS", ("blocked", ""))[0] == "blocked":
+            errors.append("Configure ELEVENLABS_API_KEY, selecione uma voz válida ou envie um áudio personalizado.")
     if not uploaded_audio and not payload.custom_audio_file and not payload.voice_name:
         errors.append("Configure uma voz TTS ou envie um áudio personalizado.")
     return list(dict.fromkeys(errors))
@@ -649,10 +749,10 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
             status_box.write(stage)
         engine_video_paths = engine_result.get("videos") if engine_result else []
         latest = cenara_find_task_mp4(task_id=task_id, engine_video_paths=engine_video_paths, limit=1)
-        if latest and latest[0].is_file() and latest[0].stat().st_size > 0:
+        if latest and latest[0].is_file() and latest[0].stat().st_size > 0 and latest[0].stat().st_mtime >= started_at:
             result.update(success=True, output_path=str(latest[0]), logs=[f"MP4 real encontrado: {latest[0]}"] )
         else:
-            result["error"] = "A geração terminou, mas nenhum MP4 real foi encontrado no diretório da tarefa."
+            result["error"] = "A geração terminou, mas nenhum MP4 real novo e não vazio foi encontrado no diretório da tarefa."
     except Exception as exc:
         logger.exception(f"Cenara geração real falhou task_id={task_id}: {exc}")
         result["error"] = f"Falha no motor de geração real: {exc}"
@@ -663,6 +763,10 @@ def cenara_render_real_preview(mp4_path):
     st.subheader("Preview Real")
     if not mp4_path:
         st.info("Nenhum vídeo real gerado ainda.")
+        return
+    current_task_id = st.session_state.get("cenara_latest_task_id")
+    if current_task_id and not _is_path_inside(mp4_path, _task_dir_for(current_task_id)):
+        st.info("Nenhum MP4 novo desta geração está disponível para preview.")
         return
     stat = mp4_path.stat()
     st.video(str(mp4_path))
@@ -679,10 +783,7 @@ def cenara_render_recent_videos():
     for path in videos:
         stat = path.stat()
         with st.expander(f"{path.name} · {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}", expanded=False):
-            st.video(str(path))
-            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB")
-            with open(path, "rb") as video_file:
-                st.download_button("Baixar MP4", video_file, file_name=path.name, mime="video/mp4", key=f"download_{path.name}_{int(stat.st_mtime)}")
+            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB · preview/download aparecem somente para o MP4 novo da geração atual.")
 
 CENARA_PROJECTS_FILE = Path(root_dir) / "storage" / "cenara_projects.json"
 
@@ -792,6 +893,7 @@ def cenara_render_command_center(params, selected_tts_server):
             output_path = Path(result["output_path"])
             status_box.update(label="finalizado", state="complete")
             st.session_state["cenara_latest_mp4"] = str(output_path)
+            st.session_state["cenara_latest_task_id"] = task_id
             cenara_save_project_record(task_id, payload, output_path, "completed")
             st.success(f"Vídeo real gerado com sucesso. task_id: {task_id}")
             st.caption(f"Saída: {output_path}")
@@ -802,7 +904,7 @@ def cenara_render_command_center(params, selected_tts_server):
             st.error(result.get("error") or "A geração falhou sem mensagem detalhada.")
     with right:
         st.markdown('<div class="cenara-workspace-card"><div class="cenara-card-kicker">03 · Preview & Output</div><h3>Render real</h3></div>', unsafe_allow_html=True)
-        latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else (cenara_find_latest_mp4(limit=1)[0] if cenara_find_latest_mp4(limit=1) else None)
+        latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else None
         cenara_render_real_preview(latest_path)
     recent_projects = cenara_load_projects()[:6]
     if recent_projects:
@@ -1375,9 +1477,9 @@ if not config.app.get("hide_config", False):
 
             st.write("Fontes de vídeo")
             provider_cards = [
-                ("Pexels", _has_configured_secret(config.app.get("pexels_api_keys", [])), "https://www.pexels.com/api/"),
-                ("Pixabay", _has_configured_secret(config.app.get("pixabay_api_keys", [])), "https://pixabay.com/api/docs/"),
-                ("Coverr", _has_configured_secret(config.app.get("coverr_api_keys", [])), "https://coverr.co/api"),
+                ("Pexels", _has_configured_secret(_provider_secret_list("pexels", config_value=config.app.get("pexels_api_keys", []))), "https://www.pexels.com/api/"),
+                ("Pixabay", _has_configured_secret(_provider_secret_list("pixabay", config_value=config.app.get("pixabay_api_keys", []))), "https://pixabay.com/api/docs/"),
+                ("Coverr", _has_configured_secret(_provider_secret_list("coverr", config_value=config.app.get("coverr_api_keys", []))), "https://coverr.co/api"),
             ]
             render_cenara_provider_status_cards(provider_cards)
 
@@ -1732,11 +1834,11 @@ with st.expander("Controles avançados MoneyPrinterTurbo", expanded=False):
                 # the API key text_input widget).
                 entered_elevenlabs_api_key = st.session_state.get("elevenlabs_api_key_input", "")
                 elevenlabs_api_key_for_loading = (
-                    entered_elevenlabs_api_key or config.elevenlabs.get("api_key", "")
+                    _provider_secret("elevenlabs", ("elevenlabs_api_key_input",), config.elevenlabs.get("api_key"))
                 )
                 if entered_elevenlabs_api_key:
                     config.elevenlabs["api_key"] = entered_elevenlabs_api_key
-                cache_key = f"elevenlabs_voices_{elevenlabs_api_key_for_loading}"
+                cache_key = "elevenlabs_voices_configured" if elevenlabs_api_key_for_loading else "elevenlabs_voices_missing"
                 if cache_key not in st.session_state:
                     st.session_state[cache_key] = voice.get_elevenlabs_voices(
                         elevenlabs_api_key_for_loading
@@ -2343,28 +2445,13 @@ start_button = st.button("Gerar vídeo real", use_container_width=True, type="pr
 if start_button:
     config.save_config()
     task_id = str(uuid4())
-    if not params.video_subject and not params.video_script:
-        st.error("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source not in ["pexels", "pixabay", "coverr", "local"]:
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pexels" and not config.app.get("pexels_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "coverr" and not config.app.get("coverr_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    readiness = cenara_provider_readiness(params.video_source, config.ui.get("tts_server", "azure-tts-v1"))
+    if uploaded_audio_file or params.custom_audio_file:
+        readiness["Voz/TTS"] = ("configured", "áudio personalizado")
+    errors = cenara_validate_generation_payload(params, uploaded_audio=uploaded_audio_file, readiness=readiness)
+    if errors:
+        for error in errors:
+            st.error(error)
         scroll_to_bottom()
         st.stop()
 
@@ -2439,6 +2526,7 @@ if start_button:
 
     video_files = [result["output_path"]]
     st.session_state["cenara_latest_mp4"] = result["output_path"]
+    st.session_state["cenara_latest_task_id"] = task_id
     st.success("Vídeo real gerado com sucesso.")
     try:
         player_cols = st.columns(len(video_files) * 2 + 1)
