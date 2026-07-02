@@ -28,7 +28,7 @@ from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
-    page_title="MoneyPrinterTurbo",
+    page_title="Cenara",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="auto",
@@ -110,9 +110,9 @@ def _sync_chatterbox_config_from_session_state():
         )
         or ""
     ).strip()
-    config.chatterbox["api_key"] = st.session_state.get(
-        "chatterbox_api_key_input", config.chatterbox.get("api_key", "")
-    )
+    chatterbox_api_key = st.session_state.get("chatterbox_api_key_input", "")
+    if chatterbox_api_key:
+        config.chatterbox["api_key"] = chatterbox_api_key
     config.chatterbox["model_id"] = (
         st.session_state.get(
             "chatterbox_model_input",
@@ -178,7 +178,8 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.title("Cenara")
+    st.caption("Powered by GXEON · Based on MoneyPrinterTurbo MIT.")
 
 with lang_col:
     display_languages = []
@@ -1110,16 +1111,16 @@ with middle_panel:
             # Read from session_state first so the API key is available before
             # the Play Voice button runs (which is earlier in the script than
             # the API key text_input widget).
-            saved_elevenlabs_api_key = st.session_state.get(
-                "elevenlabs_api_key_input",
-                config.elevenlabs.get("api_key", ""),
+            entered_elevenlabs_api_key = st.session_state.get("elevenlabs_api_key_input", "")
+            elevenlabs_api_key_for_loading = (
+                entered_elevenlabs_api_key or config.elevenlabs.get("api_key", "")
             )
-            if saved_elevenlabs_api_key:
-                config.elevenlabs["api_key"] = saved_elevenlabs_api_key
-            cache_key = f"elevenlabs_voices_{saved_elevenlabs_api_key}"
+            if entered_elevenlabs_api_key:
+                config.elevenlabs["api_key"] = entered_elevenlabs_api_key
+            cache_key = f"elevenlabs_voices_{elevenlabs_api_key_for_loading}"
             if cache_key not in st.session_state:
                 st.session_state[cache_key] = voice.get_elevenlabs_voices(
-                    saved_elevenlabs_api_key
+                    elevenlabs_api_key_for_loading
                 )
             filtered_voices = st.session_state[cache_key]
         elif selected_tts_server == "chatterbox":
@@ -1374,7 +1375,8 @@ with middle_panel:
                     if k.startswith("elevenlabs_voices_"):
                         del st.session_state[k]
 
-            config.elevenlabs["api_key"] = elevenlabs_api_key or saved_elevenlabs_api_key
+            if elevenlabs_api_key:
+                config.elevenlabs["api_key"] = elevenlabs_api_key
 
         # Chatterbox API settings section (self-hosted, OpenAI-compatible)
         if selected_tts_server == "chatterbox" or (
@@ -1395,7 +1397,8 @@ with middle_panel:
                 placeholder="Optional Chatterbox API key for this session",
                 key="chatterbox_api_key_input",
             )
-            config.chatterbox["api_key"] = chatterbox_api_key or config.chatterbox.get("api_key", "")
+            if chatterbox_api_key:
+                config.chatterbox["api_key"] = chatterbox_api_key
 
             chatterbox_model = st.text_input(
                 tr("Chatterbox Model"),
