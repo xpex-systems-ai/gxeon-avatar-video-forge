@@ -690,6 +690,14 @@ def _looks_like_provider_error(text: str) -> bool:
     )
 
 
+
+def _is_non_retryable_provider_error(text: str) -> bool:
+    normalized = (text or "").lower()
+    return any(token in normalized for token in [
+        "insufficient_quota", "quota", "billing", "429", "rate limit", "rate_limit",
+        "authentication", "unauthorized", "invalid api key", "401", "403",
+    ])
+
 def generate_script(
     video_subject: str,
     language: str = "",
@@ -750,6 +758,8 @@ def generate_script(
                     LAST_PROVIDER_ERROR = safe_error_text
                     logger.error(f"failed to generate script: {safe_error_text}")
                     final_script = ""
+                    if _is_non_retryable_provider_error(safe_error_text):
+                        return ""
                 else:
                     final_script = format_response(response_text)
             else:
@@ -765,6 +775,8 @@ def generate_script(
         except Exception as e:
             LAST_PROVIDER_ERROR = _sanitize_error_message(e)
             logger.error(f"failed to generate script: {LAST_PROVIDER_ERROR}")
+            if _is_non_retryable_provider_error(LAST_PROVIDER_ERROR):
+                return ""
 
         if i < _max_retries:
             logger.warning(f"failed to generate video script, trying again... {i + 1}")
