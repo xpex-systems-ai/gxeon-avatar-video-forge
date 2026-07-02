@@ -794,14 +794,16 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
     }
 
 def cenara_derive_manual_keywords(form):
-    source = " ".join((form.get(key) or "") for key in ["tema", "nicho", "publico", "promessa", "cta", "manual_script", "roteiro_manual"])
-    words = []
-    for word in re.findall(r"[A-Za-zÀ-ÿ0-9]{3,}", source.lower()):
-        if word not in words and word not in {"para", "com", "uma", "que", "seu", "sua", "dos", "das", "por"}:
-            words.append(word)
-        if len(words) >= 6:
-            break
-    return ", ".join(words)
+    terms = tm.derive_safe_video_terms(
+        form.get("tema"),
+        form.get("nicho"),
+        form.get("publico"),
+        form.get("promessa"),
+        form.get("cta"),
+        form.get("manual_script"),
+        form.get("roteiro_manual"),
+    )
+    return ", ".join(terms)
 
 
 def cenara_build_generation_payload(form, current_params):
@@ -949,7 +951,8 @@ def _cenara_stage_from_progress(progress):
 
 def cenara_trigger_real_generation(task_id, payload, status_box=None):
     logger.info(f"Cenara geração real iniciada task_id={task_id}")
-    started_at = time.time()
+    task_start = time.time()
+    started_at = task_start
     result = {"success": False, "task_id": task_id, "output_path": "", "error": "", "logs": []}
     if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
         derived_terms = cenara_derive_manual_keywords({
@@ -964,23 +967,23 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
                 safe_error_code="MANUAL_TERMS_REQUIRED",
                 next_action="Preencha Palavras-chave opcionais com termos de busca como fitness, treino em casa, saúde.",
             )
-            cenara_write_task_status(task_id, state="failed", failed_stage="media", safe_error_code="MANUAL_TERMS_REQUIRED", safe_message=result["error"], next_action=result["next_action"], script_ready=True, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+            cenara_write_task_status(task_id, state="failed", failed_stage="media", safe_error_code="MANUAL_TERMS_REQUIRED", safe_message=result["error"], next_action=result["next_action"], script_ready=True, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos")
             return result
-    cenara_write_task_status(task_id, state="queued", script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+    cenara_write_task_status(task_id, state="queued", failed_stage="", safe_error_code="", safe_message="", next_action="", script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
     try:
         if status_box:
             status_box.write(f"task_id: {task_id}")
             status_box.write("queued")
             if payload.video_script:
                 status_box.write("script manual recebido; LLM não será chamado para roteiro")
-        cenara_write_task_status(task_id, state="script", script_ready=bool(payload.video_script))
+        cenara_write_task_status(task_id, state="script", script_ready=bool(payload.video_script), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
         engine_result = tm.start(task_id=task_id, params=payload)
         task_state = sm.state.get_task(task_id) or {}
         progress = int(task_state.get("progress") or 0)
         stage = _cenara_stage_from_progress(progress)
         if status_box:
             status_box.write(stage)
-        cenara_write_task_status(task_id, state=stage, script_ready=bool(task_state.get("script") or payload.video_script), media_ready=bool(task_state.get("materials")), audio_ready=bool(task_state.get("audio_file")), ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+        cenara_write_task_status(task_id, state=stage, script_ready=bool(task_state.get("script") or payload.video_script), media_ready=bool(task_state.get("materials")), audio_ready=bool(task_state.get("audio_file")), ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="", llm_bypass_note="roteiro manual: LLM ignorado para roteiro/termos" if payload.video_script else "")
         engine_video_paths = engine_result.get("videos") if engine_result else []
         latest = cenara_find_task_mp4(task_id=task_id, engine_video_paths=engine_video_paths, limit=1)
         if latest and latest[0].is_file() and latest[0].stat().st_size > 0 and latest[0].stat().st_mtime >= started_at:
@@ -996,20 +999,20 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
                 result["error"] = classified["message"]
                 result["safe_error_code"] = classified["code"]
                 result["next_action"] = classified["next_action"]
-                cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=False, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+                cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=False, media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="")
             else:
                 result["error"] = "A geração terminou, mas nenhum MP4 real novo e não vazio foi encontrado no diretório da tarefa."
                 result["diagnostics"] = diagnostics
-                cenara_write_task_status(task_id, state="failed", failed_stage=failed_stage, safe_error_code="NO_CURRENT_TASK_MP4", safe_message=result["error"], next_action="Revise roteiro, mídia, voz e FFmpeg; Cenara não usará MP4 antigo como sucesso.")
+                cenara_write_task_status(task_id, state="failed", failed_stage=failed_stage, safe_error_code="NO_CURRENT_TASK_MP4", safe_message=result["error"], next_action="Revise roteiro, mídia, voz e FFmpeg; Cenara não usará MP4 antigo como sucesso.", output_path="")
     except Exception as exc:
-        logger.exception(f"Cenara geração real falhou task_id={task_id}: {exc}")
         classified = cenara_classify_provider_error(exc)
+        logger.error(f"Cenara geração real falhou task_id={task_id}: {classified['safe_message'] if 'safe_message' in classified else classified['message']}")
         if classified["code"] == "LLM_PROVIDER_BLOCKED":
             st.session_state["cenara_llm_provider_status"] = classified["status"]
         result["error"] = classified["message"]
         result["safe_error_code"] = classified["code"]
         result["next_action"] = classified["next_action"]
-        cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()))
+        cenara_write_task_status(task_id, state="failed", failed_stage="script", provider=config.app.get("llm_provider") or "openai", safe_error_code=classified["code"], safe_message=classified["message"], next_action=classified["next_action"], script_ready=bool(payload.video_script), media_ready=False, audio_ready=False, ffmpeg_available=bool(cenara_resolve_ffmpeg_binary()), output_path="")
     result["duration_seconds"] = round(time.time() - started_at, 2)
     return result
 
