@@ -1,3 +1,11 @@
+# Cenara Private MVP / Distribuição Privada Cenara
+
+**PT-BR:** Este repositório contém uma distribuição privada da Cenara para geração manual-first de vídeos com IA, baseada no MoneyPrinterTurbo MIT. O MVP é protegido por token privado, não inclui billing, Hotmart, login SaaS público ou autopost, e deve preservar as atribuições originais. Consulte o [Cenara Product Blueprint](docs/cenara/CENARA_PRODUCT_BLUEPRINT.md).
+
+**EN:** This repository contains a private Cenara distribution for manual-first AI video generation, based on MoneyPrinterTurbo MIT. The MVP is private-token protected, does not include billing, Hotmart, public SaaS login, or autoposting, and preserves the original attribution. See the [Cenara Product Blueprint](docs/cenara/CENARA_PRODUCT_BLUEPRINT.md).
+
+---
+
 <div align="center">
 <h1 align="center">MoneyPrinterTurbo 💸</h1>
 
