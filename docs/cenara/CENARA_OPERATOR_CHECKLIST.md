@@ -1,32 +1,43 @@
-# Cenara Operator Checklist
+# Cenara operator checklist
 
-Use este checklist antes de gerar e exportar vídeos no MVP privado.
+## Railway/private access
 
-## Antes de abrir o painel
+- Set `GX1_ACCESS_TOKEN` before exposing the app.
+- Open the Railway URL and enter the private token.
+- Confirm the private Cenara command center loads.
+- Confirm the badges show Private/Secure, Powered by GXEON, and MoneyPrinterTurbo MIT attribution.
 
-- Confirmar que `GX1_ACCESS_TOKEN` está configurado.
-- Confirmar que o deploy Railway está saudável.
-- Confirmar que Railway/Docker não foram alterados para esta missão.
+## Required variables and providers
 
-## Configuração de provedores
+- Configure an LLM provider if the operator expects Cenara to generate scripts from a subject.
+- Configure at least one video source:
+  - Pexels key for Pexels.
+  - Pixabay key for Pixabay.
+  - Coverr key for Coverr.
+  - Or use local uploaded media in the advanced MoneyPrinterTurbo controls.
+- Configure a TTS voice/provider or use the supported custom/no-voice workflow.
+- Confirm FFmpeg is available in the runtime.
+- ImageMagick improves subtitle rendering and appears as optional when not detected.
 
-- Verificar status de Pexels, Pixabay ou Coverr.
-- Configurar LLM para geração de roteiro.
-- Configurar TTS somente se houver uso de voz IA.
-- Manter campos de API key vazios quando não houver atualização necessária.
+## Browser test
 
-## Fluxo de criação
+1. Open the Railway URL.
+2. Enter `GX1_ACCESS_TOKEN`.
+3. Confirm **Central de Provedores** appears.
+4. Fill **Tema do vídeo** with `video de teste para anúncio de café artesanal`.
+5. Select Pexels if a Pexels key exists, otherwise select a configured source.
+6. Select or enter an available voice.
+7. Click **Gerar vídeo real**.
+8. Confirm no error says subject/script are both empty.
+9. Confirm a real `task_id` appears.
+10. Wait for the backend render.
+11. Confirm preview appears only when a real MP4 exists.
+12. Download the MP4 and verify the downloaded file matches the previewed file.
+13. Confirm the video appears in **Biblioteca**.
 
-1. Definir tema, público e promessa.
-2. Gerar ou colar roteiro.
-3. Gerar palavras-chave e escolher fonte visual.
-4. Selecionar voz, volume, velocidade e legendas.
-5. Gerar vídeo, revisar resultado e exportar manualmente.
+## MP4 validation
 
-## Limites do MVP
-
-Não há billing, Hotmart, login SaaS público, banco de dados novo ou autopost nesta fase.
-
-## Atribuição
-
-Manter visível de forma discreta: Powered by GXEON · Based on MoneyPrinterTurbo MIT.
+- The generated file must be a non-empty `.mp4` in the standard storage/task output area.
+- The UI must show file size and generation date/time.
+- The UI must not show a success message if no MP4 is found.
+- The UI must not display API keys, secret tokens, or absolute internal paths.

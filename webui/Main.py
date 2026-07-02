@@ -1,6 +1,9 @@
 import os
+import shutil
 import sys
 import webbrowser
+from datetime import datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import requests
@@ -326,9 +329,6 @@ if "local_video_materials" not in st.session_state:
 # 加载语言文件
 locales = utils.load_locales(i18n_dir)
 
-# 创建 Cenara premium shell após o gate privado e antes dos controles operacionais.
-render_cenara_premium_shell()
-
 # Language selector is intentionally kept as a compact operational control below the premium shell.
 display_languages = []
 selected_index = 0
@@ -414,6 +414,197 @@ def render_cenara_product_intro():
                 f'<div class="cenara-flow-card"><div class="cenara-flow-icon">{icon}</div><div class="cenara-flow-title">{title}</div><div class="cenara-flow-copy">{copy}</div></div>',
                 unsafe_allow_html=True,
             )
+
+
+
+
+def _mask_secret(value: str) -> str:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "••••" if text else ""
+    return f"{text[:3]}••••{text[-3:]}"
+
+
+def cenara_status_label(status: str) -> str:
+    return {
+        "configured": "Configurado",
+        "missing": "Ausente",
+        "optional": "Opcional",
+        "blocked": "Bloqueado",
+    }.get(status, status)
+
+def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
+    llm_provider_id = (config.app.get("llm_provider") or "openai").lower()
+    llm_ok = llm_provider_id == "ollama" or _has_configured_secret(config.app.get(f"{llm_provider_id}_api_key"))
+    pexels_ok = _has_configured_secret(config.app.get("pexels_api_keys"))
+    pixabay_ok = _has_configured_secret(config.app.get("pixabay_api_keys"))
+    coverr_ok = _has_configured_secret(config.app.get("coverr_api_keys"))
+    source_ok = {"pexels": pexels_ok, "pixabay": pixabay_ok, "coverr": coverr_ok, "local": True}.get(selected_video_source, False)
+    tts_server_id = selected_tts_server or config.ui.get("tts_server", "azure-tts-v1")
+    tts_ok = tts_server_id == voice.NO_VOICE_NAME or bool(config.ui.get("voice_name"))
+    if tts_server_id == "azure-tts-v2":
+        tts_ok = tts_ok and _has_configured_secret(config.azure.get("speech_key"))
+    elif tts_server_id == "siliconflow":
+        tts_ok = tts_ok and _has_configured_secret(config.siliconflow.get("api_key"))
+    elif tts_server_id == "gemini-tts":
+        tts_ok = tts_ok and _has_configured_secret(config.app.get("gemini_api_key"))
+    elif tts_server_id == "mimo-tts":
+        tts_ok = tts_ok and _has_configured_secret(config.app.get("mimo_api_key"))
+    elif tts_server_id == "elevenlabs":
+        tts_ok = tts_ok and _has_configured_secret(config.elevenlabs.get("api_key"))
+    render_ok = bool(shutil.which("ffmpeg"))
+    imagemagick_ok = bool(shutil.which("magick") or shutil.which("convert"))
+    return {
+        "LLM": ("configured" if llm_ok else "missing", llm_provider_id),
+        "Pexels": ("configured" if pexels_ok else "missing", "fonte de vídeo"),
+        "Pixabay": ("configured" if pixabay_ok else "missing", "fonte de vídeo"),
+        "Coverr": ("configured" if coverr_ok else "optional", "fonte opcional"),
+        "Fonte de vídeo": ("configured" if source_ok else "blocked", selected_video_source),
+        "Voz/TTS": ("configured" if tts_ok else "blocked", tts_server_id),
+        "Renderização": ("configured" if render_ok else "blocked", "FFmpeg"),
+        "Legendas": ("configured" if imagemagick_ok else "optional", "ImageMagick"),
+    }
+
+def cenara_build_generation_payload(form, current_params):
+    tema = (form.get("tema") or "").strip()
+    roteiro = (form.get("roteiro_manual") or "").strip()
+    contexto = [
+        f"Nicho: {form.get('nicho','').strip()}" if form.get("nicho") else "",
+        f"Público-alvo: {form.get('publico','').strip()}" if form.get("publico") else "",
+        f"Promessa: {form.get('promessa','').strip()}" if form.get("promessa") else "",
+        f"CTA: {form.get('cta','').strip()}" if form.get("cta") else "",
+    ]
+    contexto = [item for item in contexto if item]
+    subject = tema or (roteiro.split(".", 1)[0][:120] if roteiro else "")
+    if contexto and subject:
+        subject = f"{subject} | " + " | ".join(contexto)
+    script = roteiro
+    if script and form.get("cta"):
+        script = f"{script.rstrip()}\n\nCTA: {form.get('cta').strip()}"
+    current_params.video_subject = subject.strip()
+    current_params.video_script = script.strip()
+    current_params.video_terms = (form.get("palavras_chave") or current_params.video_terms or tema).strip()
+    current_params.video_source = form.get("fonte_video") or current_params.video_source
+    current_params.video_clip_duration = int(form.get("duracao") or current_params.video_clip_duration or 3)
+    current_params.video_aspect = {"9:16": VideoAspect.portrait, "16:9": VideoAspect.landscape, "1:1": VideoAspect.portrait}.get(form.get("formato"), current_params.video_aspect)
+    if form.get("voz_tts"):
+        current_params.voice_name = form["voz_tts"]
+    return current_params
+
+def cenara_validate_generation_payload(payload, uploaded_audio=None):
+    errors = []
+    if not payload.video_subject and not payload.video_script:
+        errors.append("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
+    if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
+        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if payload.video_source == "pexels" and not _has_configured_secret(config.app.get("pexels_api_keys")):
+        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if payload.video_source == "pixabay" and not _has_configured_secret(config.app.get("pixabay_api_keys")):
+        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if payload.video_source == "coverr" and not _has_configured_secret(config.app.get("coverr_api_keys")):
+        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if not uploaded_audio and not payload.voice_name:
+        errors.append("Configure uma voz TTS ou envie um áudio personalizado.")
+    return errors
+
+def cenara_find_latest_mp4(task_id=None, limit=12):
+    roots = [Path(root_dir) / "storage" / "tasks", Path(root_dir) / "storage"]
+    candidates = []
+    for base in roots:
+        if not base.exists():
+            continue
+        search_base = base / str(task_id) if task_id and (base / str(task_id)).exists() else base
+        candidates.extend(path for path in search_base.rglob("*.mp4") if path.is_file() and path.stat().st_size > 0)
+    return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
+
+def cenara_trigger_real_generation(task_id, payload):
+    logger.info(f"Cenara geração real iniciada task_id={task_id}")
+    return tm.start(task_id=task_id, params=payload)
+
+def cenara_render_real_preview(mp4_path):
+    st.subheader("Preview Real")
+    if not mp4_path:
+        st.info("Nenhum vídeo real gerado ainda.")
+        return
+    stat = mp4_path.stat()
+    st.video(str(mp4_path))
+    st.caption(f"Arquivo: {mp4_path.name} · Tamanho: {stat.st_size / (1024 * 1024):.2f} MB · Gerado em: {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}")
+    with open(mp4_path, "rb") as video_file:
+        st.download_button("Baixar MP4", video_file, file_name=mp4_path.name, mime="video/mp4", use_container_width=True)
+
+def cenara_render_recent_videos():
+    st.subheader("Biblioteca")
+    videos = cenara_find_latest_mp4(limit=6)
+    if not videos:
+        st.info("Nenhum vídeo real gerado ainda.")
+        return
+    for path in videos:
+        stat = path.stat()
+        with st.expander(f"{path.name} · {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}", expanded=False):
+            st.video(str(path))
+            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB")
+            with open(path, "rb") as video_file:
+                st.download_button("Baixar MP4", video_file, file_name=path.name, mime="video/mp4", key=f"download_{path.name}_{int(stat.st_mtime)}")
+
+def cenara_render_provider_center(readiness):
+    st.subheader("Central de Provedores")
+    overall_blocked = any(status == "blocked" for status, _ in readiness.values())
+    st.write(f"Status geral: {'Bloqueado' if overall_blocked else 'Pronto'}")
+    cols = st.columns(4)
+    for index, (label, (status, detail)) in enumerate(readiness.items()):
+        with cols[index % 4]:
+            st.metric(label, cenara_status_label(status), detail)
+
+def cenara_render_command_center(params, selected_tts_server):
+    st.title("Criar vídeo real com IA")
+    st.caption("Configure o criativo, gere o vídeo, revise o preview e baixe o MP4.")
+    st.markdown("**Privado** · **Seguro** · **Powered by GXEON** · **Baseado no MoneyPrinterTurbo MIT**")
+    readiness = cenara_provider_readiness(params.video_source, selected_tts_server)
+    cenara_render_provider_center(readiness)
+    left, right = st.columns([1.15, 0.85], gap="large")
+    with left:
+        st.subheader("Criador de Vídeo")
+        with st.form("cenara_real_creator_form"):
+            tema = st.text_input("Tema do vídeo", value=st.session_state.get("video_subject", ""), key="cenara_tema")
+            publico = st.text_input("Público-alvo", key="cenara_publico")
+            promessa = st.text_input("Promessa", key="cenara_promessa")
+            nicho = st.text_input("Nicho", key="cenara_nicho")
+            cta = st.text_input("CTA", key="cenara_cta")
+            roteiro_manual = st.text_area("Roteiro manual opcional", value=st.session_state.get("video_script", ""), key="cenara_roteiro_manual")
+            palavras_chave = st.text_area("Palavras-chave opcionais", value=st.session_state.get("video_terms", ""), key="cenara_palavras_chave")
+            formato = st.selectbox("Formato", ["9:16", "1:1", "16:9"], key="cenara_formato")
+            duracao = st.selectbox("Duração", [3, 4, 5, 6, 7, 8, 9, 10], key="cenara_duracao")
+            fonte_video = st.selectbox("Fonte do vídeo", ["pexels", "pixabay", "coverr", "local"], index=["pexels", "pixabay", "coverr", "local"].index(params.video_source if params.video_source in ["pexels", "pixabay", "coverr", "local"] else "pexels"), key="cenara_fonte_video")
+            voz_tts = st.text_input("Voz", value=params.voice_name or config.ui.get("voice_name", ""), key="cenara_voz_tts")
+            submitted = st.form_submit_button("Gerar vídeo real", use_container_width=True, type="primary")
+        if submitted:
+            form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
+            payload = cenara_build_generation_payload(form, params)
+            st.session_state["video_subject"] = payload.video_subject
+            st.session_state["video_script"] = payload.video_script
+            st.session_state["video_terms"] = payload.video_terms
+            errors = cenara_validate_generation_payload(payload)
+            if errors:
+                for error in errors:
+                    st.error(error)
+                st.stop()
+            task_id = str(uuid4())
+            st.info(f"Geração iniciada. Acompanhe o progresso abaixo. task_id: {task_id}")
+            status_box = st.status("preparando roteiro", expanded=True)
+            status_box.write("buscando mídia, gerando voz, montando vídeo e renderizando pelo motor real")
+            result = cenara_trigger_real_generation(task_id, payload)
+            latest = cenara_find_latest_mp4(task_id=task_id, limit=1)
+            if result and latest:
+                status_box.update(label="finalizando", state="complete")
+                st.session_state["cenara_latest_mp4"] = str(latest[0])
+                st.success("Vídeo real gerado com sucesso.")
+            else:
+                status_box.update(label="geração sem MP4", state="error")
+                st.error("A geração terminou, mas nenhum MP4 foi encontrado. Verifique o diretório de saída.")
+    with right:
+        latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else (cenara_find_latest_mp4(limit=1)[0] if cenara_find_latest_mp4(limit=1) else None)
+        cenara_render_real_preview(latest_path)
+    cenara_render_recent_videos()
 
 
 def get_all_fonts():
@@ -1031,431 +1222,425 @@ params.match_materials_to_script = bool(
 uploaded_files = []
 uploaded_audio_file = None
 
-with left_panel:
-    with st.container(border=True):
-        st.write(tr("Video Script Settings"))
-        params.video_subject = st.text_input(
-            tr("Video Subject"),
-            key="video_subject",
-        ).strip()
+cenara_render_command_center(params, config.ui.get("tts_server", "azure-tts-v1"))
 
-        video_languages = [
-            (tr("Auto Detect"), ""),
-        ]
-        for code in support_locales:
-            video_languages.append((code, code))
+with st.expander("Controles avançados MoneyPrinterTurbo", expanded=False):
 
-        selected_index = st.selectbox(
-            tr("Script Language"),
-            index=0,
-            options=range(
-                len(video_languages)
-            ),  # Use the index as the internal option value
-            format_func=lambda x: video_languages[x][
-                0
-            ],  # The label is displayed to the user
-        )
-        params.video_language = video_languages[selected_index][1]
-
-        with st.expander(tr("Advanced Script Settings"), expanded=False):
-            params.paragraph_number = st.slider(
-                tr("Script Paragraph Number"),
-                min_value=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
-                max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
-                value=st.session_state.get("paragraph_number_input", 1),
-                key="paragraph_number_input",
-            )
-            params.video_script_prompt = st.text_area(
-                tr("Custom Script Requirements"),
-                height=100,
-                max_chars=llm.MAX_SCRIPT_PROMPT_LENGTH,
-                placeholder=tr("Custom Script Requirements Placeholder"),
-                key="video_script_prompt",
+    with left_panel:
+        with st.container(border=True):
+            st.write(tr("Video Script Settings"))
+            params.video_subject = st.text_input(
+                tr("Video Subject"),
+                key="video_subject",
             ).strip()
 
-            use_custom_system_prompt = st.checkbox(
-                tr("Use Custom System Prompt"),
-                help=tr("Use Custom System Prompt Help"),
-                key="use_custom_system_prompt",
-            )
-
-            if use_custom_system_prompt:
-                custom_system_prompt = st.text_area(
-                    tr("Custom System Prompt"),
-                    height=240,
-                    max_chars=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
-                    key="custom_system_prompt",
-                ).strip()
-                params.custom_system_prompt = custom_system_prompt
-            else:
-                params.custom_system_prompt = ""
-
-        if st.button(
-            tr("Generate Video Script and Keywords"), key="auto_generate_script"
-        ):
-            with st.spinner(tr("Generating Video Script and Keywords")):
-                script = llm.generate_script(
-                    video_subject=params.video_subject,
-                    language=params.video_language,
-                    paragraph_number=params.paragraph_number,
-                    video_script_prompt=params.video_script_prompt,
-                    custom_system_prompt=params.custom_system_prompt,
-                )
-                terms = llm.generate_terms(
-                    params.video_subject,
-                    script,
-                    amount=8 if params.match_materials_to_script else 5,
-                    match_script_order=params.match_materials_to_script,
-                )
-                if "Error: " in script:
-                    st.error(tr(script))
-                elif "Error: " in terms:
-                    st.error(tr(terms))
-                else:
-                    st.session_state["video_script"] = script
-                    st.session_state["video_terms"] = ", ".join(terms)
-        params.video_script = st.text_area(
-            tr("Video Script"), value=st.session_state["video_script"], height=280
-        )
-        if st.button(tr("Generate Video Keywords"), key="auto_generate_terms"):
-            if not params.video_script:
-                st.error(tr("Please Enter the Video Subject"))
-                st.stop()
-
-            with st.spinner(tr("Generating Video Keywords")):
-                terms = llm.generate_terms(
-                    params.video_subject,
-                    params.video_script,
-                    amount=8 if params.match_materials_to_script else 5,
-                    match_script_order=params.match_materials_to_script,
-                )
-                if "Error: " in terms:
-                    st.error(tr(terms))
-                else:
-                    st.session_state["video_terms"] = ", ".join(terms)
-
-        params.video_terms = st.text_area(
-            tr("Video Keywords"), value=st.session_state["video_terms"]
-        )
-
-with middle_panel:
-    with st.container(border=True):
-        st.write(tr("Video Settings"))
-        video_concat_modes = [
-            (tr("Sequential"), "sequential"),
-            (tr("Random"), "random"),
-        ]
-        video_sources = [
-            (tr("Pexels"), "pexels"),
-            (tr("Pixabay"), "pixabay"),
-            (tr("Coverr"), "coverr"),
-            (tr("Local file"), "local"),
-            (tr("TikTok"), "douyin"),
-            (tr("Bilibili"), "bilibili"),
-            (tr("Xiaohongshu"), "xiaohongshu"),
-        ]
-
-        saved_video_source_name = config.app.get("video_source", "pexels")
-        saved_video_source_index = [v[1] for v in video_sources].index(
-            saved_video_source_name
-        )
-
-        selected_index = st.selectbox(
-            tr("Video Source"),
-            options=range(len(video_sources)),
-            format_func=lambda x: video_sources[x][0],
-            index=saved_video_source_index,
-        )
-        params.video_source = video_sources[selected_index][1]
-        config.app["video_source"] = params.video_source
-
-        if params.video_source == "local":
-            # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。
-            local_file_types = ["mp4", "mov", "avi", "flv", "mkv", "jpg", "jpeg", "png"]
-            uploaded_files = st.file_uploader(
-                tr("Upload Local Files"),
-                type=local_file_types + [file_type.upper() for file_type in local_file_types],
-                accept_multiple_files=True,
-            )
-
-        selected_index = st.selectbox(
-            tr("Video Concat Mode"),
-            index=1,
-            options=range(
-                len(video_concat_modes)
-            ),  # Use the index as the internal option value
-            format_func=lambda x: video_concat_modes[x][
-                0
-            ],  # The label is displayed to the user
-        )
-        params.video_concat_mode = VideoConcatMode(
-            video_concat_modes[selected_index][1]
-        )
-
-        # 视频转场模式
-        video_transition_modes = [
-            (tr("None"), VideoTransitionMode.none.value),
-            (tr("Shuffle"), VideoTransitionMode.shuffle.value),
-            (tr("FadeIn"), VideoTransitionMode.fade_in.value),
-            (tr("FadeOut"), VideoTransitionMode.fade_out.value),
-            (tr("SlideIn"), VideoTransitionMode.slide_in.value),
-            (tr("SlideOut"), VideoTransitionMode.slide_out.value),
-        ]
-        selected_index = st.selectbox(
-            tr("Video Transition Mode"),
-            options=range(len(video_transition_modes)),
-            format_func=lambda x: video_transition_modes[x][0],
-            index=0,
-        )
-        params.video_transition_mode = VideoTransitionMode(
-            video_transition_modes[selected_index][1]
-        )
-
-        video_aspect_ratios = [
-            (tr("Portrait"), VideoAspect.portrait.value),
-            (tr("Landscape"), VideoAspect.landscape.value),
-        ]
-        # Coverr 库 99% 是 16:9 横屏,默认竖屏会让画面被大量黑边包围。
-        # 用 source-specific widget key 让每个 source 各自记忆 aspect 选择:
-        #   - 首次切到 coverr → 默认 Landscape(index=1)
-        #   - 其他 source 沿用 Portrait(index=0)
-        #   - 用户在某 source 下手动改过 aspect,session_state 会记住,
-        #     下次回到同一 source 时尊重用户选择,不会再被强制覆盖。
-        default_aspect_index = 1 if params.video_source == "coverr" else 0
-        selected_index = st.selectbox(
-            tr("Video Ratio"),
-            options=range(
-                len(video_aspect_ratios)
-            ),  # Use the index as the internal option value
-            format_func=lambda x: video_aspect_ratios[x][
-                0
-            ],  # The label is displayed to the user
-            index=default_aspect_index,
-            key=f"video_aspect_for_{params.video_source}",
-        )
-        params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
-
-        params.video_clip_duration = st.selectbox(
-            tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
-        )
-        params.video_count = st.selectbox(
-            tr("Number of Videos Generated Simultaneously"),
-            options=[1, 2, 3, 4, 5],
-            index=0,
-        )
-
-        with st.expander(tr("Advanced Video Settings"), expanded=False):
-            # 默认关闭，避免影响老用户的随机素材体验。开启后只改变关键词和素材
-            # 下载/拼接顺序，用于改善画面主题早于或晚于旁白的问题。
-            params.match_materials_to_script = st.checkbox(
-                tr("Match Materials to Script Order"),
-                help=tr("Match Materials to Script Order Help"),
-                key="match_materials_to_script",
-            )
-            config.app["match_materials_to_script"] = params.match_materials_to_script
-
-            video_codec_options = [
-                ("libx264 (CPU)", "libx264"),
-                ("NVIDIA NVENC (h264_nvenc)", "h264_nvenc"),
-                ("AMD AMF (h264_amf)", "h264_amf"),
-                ("Intel QSV (h264_qsv)", "h264_qsv"),
-                ("Windows MediaFoundation (h264_mf)", "h264_mf"),
-                ("macOS VideoToolbox (h264_videotoolbox)", "h264_videotoolbox"),
+            video_languages = [
+                (tr("Auto Detect"), ""),
             ]
-            saved_video_codec = config.app.get("video_codec", "libx264")
-            saved_video_codec_values = [item[1] for item in video_codec_options]
-            if saved_video_codec not in saved_video_codec_values:
-                saved_video_codec = "libx264"
-            selected_codec_index = saved_video_codec_values.index(saved_video_codec)
-            selected_codec_index = st.selectbox(
-                tr("Video Encoder"),
-                options=range(len(video_codec_options)),
-                index=selected_codec_index,
-                format_func=lambda x: video_codec_options[x][0],
-                help=tr("Video Encoder Help"),
+            for code in support_locales:
+                video_languages.append((code, code))
+
+            selected_index = st.selectbox(
+                tr("Script Language"),
+                index=0,
+                options=range(
+                    len(video_languages)
+                ),  # Use the index as the internal option value
+                format_func=lambda x: video_languages[x][
+                    0
+                ],  # The label is displayed to the user
             )
-            config.app["video_codec"] = video_codec_options[selected_codec_index][1]
-    with st.container(border=True):
-        st.write(tr("Audio Settings"))
+            params.video_language = video_languages[selected_index][1]
 
-        # 添加TTS服务器选择下拉框
-        tts_servers = [
-            (voice.NO_VOICE_NAME, tr("No Voice")),
-            ("azure-tts-v1", "Azure TTS V1"),
-            ("azure-tts-v2", "Azure TTS V2"),
-            ("siliconflow", "SiliconFlow TTS"),
-            ("gemini-tts", "Google Gemini TTS"),
-            ("mimo-tts", "Xiaomi MiMo TTS"),
-            ("elevenlabs", "ElevenLabs TTS"),
-            ("chatterbox", "Chatterbox TTS"),
-        ]
-
-        # 获取保存的TTS服务器，默认为v1
-        saved_tts_server = config.ui.get("tts_server", "azure-tts-v1")
-        saved_tts_server_index = 0
-        for i, (server_value, _) in enumerate(tts_servers):
-            if server_value == saved_tts_server:
-                saved_tts_server_index = i
-                break
-
-        selected_tts_server_index = st.selectbox(
-            tr("TTS Servers"),
-            options=range(len(tts_servers)),
-            format_func=lambda x: tts_servers[x][1],
-            index=saved_tts_server_index,
-        )
-
-        selected_tts_server = tts_servers[selected_tts_server_index][0]
-        config.ui["tts_server"] = selected_tts_server
-
-        # 根据选择的TTS服务器获取声音列表
-        filtered_voices = []
-
-        if selected_tts_server == voice.NO_VOICE_NAME:
-            # 无配音是显式模式，只提供一个稳定 sentinel。这样普通 TTS 的空配置
-            # 不会被误判为静音，后端也能继续通过同一条音频/字幕流程生成视频。
-            filtered_voices = [voice.NO_VOICE_NAME]
-        elif selected_tts_server == "siliconflow":
-            # 获取硅基流动的声音列表
-            filtered_voices = voice.get_siliconflow_voices()
-        elif selected_tts_server == "gemini-tts":
-            # 获取Gemini TTS的声音列表
-            filtered_voices = voice.get_gemini_voices()
-        elif selected_tts_server == "mimo-tts":
-            # 获取 Xiaomi MiMo TTS 的预置音色列表
-            filtered_voices = voice.get_mimo_voices()
-        elif selected_tts_server == "elevenlabs":
-            # Read from session_state first so the API key is available before
-            # the Play Voice button runs (which is earlier in the script than
-            # the API key text_input widget).
-            entered_elevenlabs_api_key = st.session_state.get("elevenlabs_api_key_input", "")
-            elevenlabs_api_key_for_loading = (
-                entered_elevenlabs_api_key or config.elevenlabs.get("api_key", "")
-            )
-            if entered_elevenlabs_api_key:
-                config.elevenlabs["api_key"] = entered_elevenlabs_api_key
-            cache_key = f"elevenlabs_voices_{elevenlabs_api_key_for_loading}"
-            if cache_key not in st.session_state:
-                st.session_state[cache_key] = voice.get_elevenlabs_voices(
-                    elevenlabs_api_key_for_loading
+            with st.expander(tr("Advanced Script Settings"), expanded=False):
+                params.paragraph_number = st.slider(
+                    tr("Script Paragraph Number"),
+                    min_value=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
+                    max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
+                    value=st.session_state.get("paragraph_number_input", 1),
+                    key="paragraph_number_input",
                 )
-            filtered_voices = st.session_state[cache_key]
-        elif selected_tts_server == "chatterbox":
-            # 自托管 Chatterbox 服务的预置音色（来自 [chatterbox] voices 配置）
-            _sync_chatterbox_config_from_session_state()
-            filtered_voices = voice.get_chatterbox_voices()
-        else:
-            # 获取Azure的声音列表
-            all_voices = voice.get_all_azure_voices(filter_locals=None)
+                params.video_script_prompt = st.text_area(
+                    tr("Custom Script Requirements"),
+                    height=100,
+                    max_chars=llm.MAX_SCRIPT_PROMPT_LENGTH,
+                    placeholder=tr("Custom Script Requirements Placeholder"),
+                    key="video_script_prompt",
+                ).strip()
 
-            # 根据选择的TTS服务器筛选声音
-            for v in all_voices:
-                if selected_tts_server == "azure-tts-v2":
-                    # V2版本的声音名称中包含"v2"
-                    if "V2" in v:
-                        filtered_voices.append(v)
+                use_custom_system_prompt = st.checkbox(
+                    tr("Use Custom System Prompt"),
+                    help=tr("Use Custom System Prompt Help"),
+                    key="use_custom_system_prompt",
+                )
+
+                if use_custom_system_prompt:
+                    custom_system_prompt = st.text_area(
+                        tr("Custom System Prompt"),
+                        height=240,
+                        max_chars=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
+                        key="custom_system_prompt",
+                    ).strip()
+                    params.custom_system_prompt = custom_system_prompt
                 else:
-                    # V1版本的声音名称中不包含"v2"
-                    if "V2" not in v:
-                        filtered_voices.append(v)
+                    params.custom_system_prompt = ""
 
-        if selected_tts_server == voice.NO_VOICE_NAME:
-            friendly_names = {voice.NO_VOICE_NAME: tr("No Voice")}
-        else:
-            def _friendly(v):
-                if voice.is_elevenlabs_voice(v):
-                    parts = v.split(":", 2)
-                    return parts[2] if len(parts) >= 3 else v
-                if voice.is_chatterbox_voice(v):
-                    name = v.split(":", 1)[1] if ":" in v else v
-                    return name.replace("-Female", "").replace("-Male", "")
-                return (
-                    v.replace("Female", tr("Female"))
-                    .replace("Male", tr("Male"))
-                    .replace("Neural", "")
+            if st.button(
+                tr("Generate Video Script and Keywords"), key="auto_generate_script"
+            ):
+                with st.spinner(tr("Generating Video Script and Keywords")):
+                    script = llm.generate_script(
+                        video_subject=params.video_subject,
+                        language=params.video_language,
+                        paragraph_number=params.paragraph_number,
+                        video_script_prompt=params.video_script_prompt,
+                        custom_system_prompt=params.custom_system_prompt,
+                    )
+                    terms = llm.generate_terms(
+                        params.video_subject,
+                        script,
+                        amount=8 if params.match_materials_to_script else 5,
+                        match_script_order=params.match_materials_to_script,
+                    )
+                    if "Error: " in script:
+                        st.error(tr(script))
+                    elif "Error: " in terms:
+                        st.error(tr(terms))
+                    else:
+                        st.session_state["video_script"] = script
+                        st.session_state["video_terms"] = ", ".join(terms)
+            params.video_script = st.text_area(
+                tr("Video Script"), value=st.session_state["video_script"], height=280
+            )
+            if st.button(tr("Generate Video Keywords"), key="auto_generate_terms"):
+                if not params.video_script:
+                    st.error(tr("Please Enter the Video Subject"))
+                    st.stop()
+
+                with st.spinner(tr("Generating Video Keywords")):
+                    terms = llm.generate_terms(
+                        params.video_subject,
+                        params.video_script,
+                        amount=8 if params.match_materials_to_script else 5,
+                        match_script_order=params.match_materials_to_script,
+                    )
+                    if "Error: " in terms:
+                        st.error(tr(terms))
+                    else:
+                        st.session_state["video_terms"] = ", ".join(terms)
+
+            params.video_terms = st.text_area(
+                tr("Video Keywords"), value=st.session_state["video_terms"]
+            )
+
+    with middle_panel:
+        with st.container(border=True):
+            st.write(tr("Video Settings"))
+            video_concat_modes = [
+                (tr("Sequential"), "sequential"),
+                (tr("Random"), "random"),
+            ]
+            video_sources = [
+                (tr("Pexels"), "pexels"),
+                (tr("Pixabay"), "pixabay"),
+                (tr("Coverr"), "coverr"),
+                (tr("Local file"), "local"),
+                (tr("TikTok"), "douyin"),
+                (tr("Bilibili"), "bilibili"),
+                (tr("Xiaohongshu"), "xiaohongshu"),
+            ]
+
+            saved_video_source_name = config.app.get("video_source", "pexels")
+            saved_video_source_index = [v[1] for v in video_sources].index(
+                saved_video_source_name
+            )
+
+            selected_index = st.selectbox(
+                tr("Video Source"),
+                options=range(len(video_sources)),
+                format_func=lambda x: video_sources[x][0],
+                index=saved_video_source_index,
+            )
+            params.video_source = video_sources[selected_index][1]
+            config.app["video_source"] = params.video_source
+
+            if params.video_source == "local":
+                # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。
+                local_file_types = ["mp4", "mov", "avi", "flv", "mkv", "jpg", "jpeg", "png"]
+                uploaded_files = st.file_uploader(
+                    tr("Upload Local Files"),
+                    type=local_file_types + [file_type.upper() for file_type in local_file_types],
+                    accept_multiple_files=True,
                 )
-            friendly_names = {v: _friendly(v) for v in filtered_voices}
 
-        saved_voice_name = config.ui.get("voice_name", "")
-        saved_voice_name_index = 0
+            selected_index = st.selectbox(
+                tr("Video Concat Mode"),
+                index=1,
+                options=range(
+                    len(video_concat_modes)
+                ),  # Use the index as the internal option value
+                format_func=lambda x: video_concat_modes[x][
+                    0
+                ],  # The label is displayed to the user
+            )
+            params.video_concat_mode = VideoConcatMode(
+                video_concat_modes[selected_index][1]
+            )
 
-        # 检查保存的声音是否在当前筛选的声音列表中
-        if saved_voice_name in friendly_names:
-            saved_voice_name_index = list(friendly_names.keys()).index(saved_voice_name)
-        else:
-            # 如果不在，则根据当前UI语言选择一个默认声音
-            for i, v in enumerate(filtered_voices):
-                if v.lower().startswith(st.session_state["ui_language"].lower()):
-                    saved_voice_name_index = i
+            # 视频转场模式
+            video_transition_modes = [
+                (tr("None"), VideoTransitionMode.none.value),
+                (tr("Shuffle"), VideoTransitionMode.shuffle.value),
+                (tr("FadeIn"), VideoTransitionMode.fade_in.value),
+                (tr("FadeOut"), VideoTransitionMode.fade_out.value),
+                (tr("SlideIn"), VideoTransitionMode.slide_in.value),
+                (tr("SlideOut"), VideoTransitionMode.slide_out.value),
+            ]
+            selected_index = st.selectbox(
+                tr("Video Transition Mode"),
+                options=range(len(video_transition_modes)),
+                format_func=lambda x: video_transition_modes[x][0],
+                index=0,
+            )
+            params.video_transition_mode = VideoTransitionMode(
+                video_transition_modes[selected_index][1]
+            )
+
+            video_aspect_ratios = [
+                (tr("Portrait"), VideoAspect.portrait.value),
+                (tr("Landscape"), VideoAspect.landscape.value),
+            ]
+            # Coverr 库 99% 是 16:9 横屏,默认竖屏会让画面被大量黑边包围。
+            # 用 source-specific widget key 让每个 source 各自记忆 aspect 选择:
+            #   - 首次切到 coverr → 默认 Landscape(index=1)
+            #   - 其他 source 沿用 Portrait(index=0)
+            #   - 用户在某 source 下手动改过 aspect,session_state 会记住,
+            #     下次回到同一 source 时尊重用户选择,不会再被强制覆盖。
+            default_aspect_index = 1 if params.video_source == "coverr" else 0
+            selected_index = st.selectbox(
+                tr("Video Ratio"),
+                options=range(
+                    len(video_aspect_ratios)
+                ),  # Use the index as the internal option value
+                format_func=lambda x: video_aspect_ratios[x][
+                    0
+                ],  # The label is displayed to the user
+                index=default_aspect_index,
+                key=f"video_aspect_for_{params.video_source}",
+            )
+            params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
+
+            params.video_clip_duration = st.selectbox(
+                tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
+            )
+            params.video_count = st.selectbox(
+                tr("Number of Videos Generated Simultaneously"),
+                options=[1, 2, 3, 4, 5],
+                index=0,
+            )
+
+            with st.expander(tr("Advanced Video Settings"), expanded=False):
+                # 默认关闭，避免影响老用户的随机素材体验。开启后只改变关键词和素材
+                # 下载/拼接顺序，用于改善画面主题早于或晚于旁白的问题。
+                params.match_materials_to_script = st.checkbox(
+                    tr("Match Materials to Script Order"),
+                    help=tr("Match Materials to Script Order Help"),
+                    key="match_materials_to_script",
+                )
+                config.app["match_materials_to_script"] = params.match_materials_to_script
+
+                video_codec_options = [
+                    ("libx264 (CPU)", "libx264"),
+                    ("NVIDIA NVENC (h264_nvenc)", "h264_nvenc"),
+                    ("AMD AMF (h264_amf)", "h264_amf"),
+                    ("Intel QSV (h264_qsv)", "h264_qsv"),
+                    ("Windows MediaFoundation (h264_mf)", "h264_mf"),
+                    ("macOS VideoToolbox (h264_videotoolbox)", "h264_videotoolbox"),
+                ]
+                saved_video_codec = config.app.get("video_codec", "libx264")
+                saved_video_codec_values = [item[1] for item in video_codec_options]
+                if saved_video_codec not in saved_video_codec_values:
+                    saved_video_codec = "libx264"
+                selected_codec_index = saved_video_codec_values.index(saved_video_codec)
+                selected_codec_index = st.selectbox(
+                    tr("Video Encoder"),
+                    options=range(len(video_codec_options)),
+                    index=selected_codec_index,
+                    format_func=lambda x: video_codec_options[x][0],
+                    help=tr("Video Encoder Help"),
+                )
+                config.app["video_codec"] = video_codec_options[selected_codec_index][1]
+        with st.container(border=True):
+            st.write(tr("Audio Settings"))
+
+            # 添加TTS服务器选择下拉框
+            tts_servers = [
+                (voice.NO_VOICE_NAME, tr("No Voice")),
+                ("azure-tts-v1", "Azure TTS V1"),
+                ("azure-tts-v2", "Azure TTS V2"),
+                ("siliconflow", "SiliconFlow TTS"),
+                ("gemini-tts", "Google Gemini TTS"),
+                ("mimo-tts", "Xiaomi MiMo TTS"),
+                ("elevenlabs", "ElevenLabs TTS"),
+                ("chatterbox", "Chatterbox TTS"),
+            ]
+
+            # 获取保存的TTS服务器，默认为v1
+            saved_tts_server = config.ui.get("tts_server", "azure-tts-v1")
+            saved_tts_server_index = 0
+            for i, (server_value, _) in enumerate(tts_servers):
+                if server_value == saved_tts_server:
+                    saved_tts_server_index = i
                     break
 
-        # 如果没有找到匹配的声音，使用第一个声音
-        if saved_voice_name_index >= len(friendly_names) and friendly_names:
+            selected_tts_server_index = st.selectbox(
+                tr("TTS Servers"),
+                options=range(len(tts_servers)),
+                format_func=lambda x: tts_servers[x][1],
+                index=saved_tts_server_index,
+            )
+
+            selected_tts_server = tts_servers[selected_tts_server_index][0]
+            config.ui["tts_server"] = selected_tts_server
+
+            # 根据选择的TTS服务器获取声音列表
+            filtered_voices = []
+
+            if selected_tts_server == voice.NO_VOICE_NAME:
+                # 无配音是显式模式，只提供一个稳定 sentinel。这样普通 TTS 的空配置
+                # 不会被误判为静音，后端也能继续通过同一条音频/字幕流程生成视频。
+                filtered_voices = [voice.NO_VOICE_NAME]
+            elif selected_tts_server == "siliconflow":
+                # 获取硅基流动的声音列表
+                filtered_voices = voice.get_siliconflow_voices()
+            elif selected_tts_server == "gemini-tts":
+                # 获取Gemini TTS的声音列表
+                filtered_voices = voice.get_gemini_voices()
+            elif selected_tts_server == "mimo-tts":
+                # 获取 Xiaomi MiMo TTS 的预置音色列表
+                filtered_voices = voice.get_mimo_voices()
+            elif selected_tts_server == "elevenlabs":
+                # Read from session_state first so the API key is available before
+                # the Play Voice button runs (which is earlier in the script than
+                # the API key text_input widget).
+                entered_elevenlabs_api_key = st.session_state.get("elevenlabs_api_key_input", "")
+                elevenlabs_api_key_for_loading = (
+                    entered_elevenlabs_api_key or config.elevenlabs.get("api_key", "")
+                )
+                if entered_elevenlabs_api_key:
+                    config.elevenlabs["api_key"] = entered_elevenlabs_api_key
+                cache_key = f"elevenlabs_voices_{elevenlabs_api_key_for_loading}"
+                if cache_key not in st.session_state:
+                    st.session_state[cache_key] = voice.get_elevenlabs_voices(
+                        elevenlabs_api_key_for_loading
+                    )
+                filtered_voices = st.session_state[cache_key]
+            elif selected_tts_server == "chatterbox":
+                # 自托管 Chatterbox 服务的预置音色（来自 [chatterbox] voices 配置）
+                _sync_chatterbox_config_from_session_state()
+                filtered_voices = voice.get_chatterbox_voices()
+            else:
+                # 获取Azure的声音列表
+                all_voices = voice.get_all_azure_voices(filter_locals=None)
+
+                # 根据选择的TTS服务器筛选声音
+                for v in all_voices:
+                    if selected_tts_server == "azure-tts-v2":
+                        # V2版本的声音名称中包含"v2"
+                        if "V2" in v:
+                            filtered_voices.append(v)
+                    else:
+                        # V1版本的声音名称中不包含"v2"
+                        if "V2" not in v:
+                            filtered_voices.append(v)
+
+            if selected_tts_server == voice.NO_VOICE_NAME:
+                friendly_names = {voice.NO_VOICE_NAME: tr("No Voice")}
+            else:
+                def _friendly(v):
+                    if voice.is_elevenlabs_voice(v):
+                        parts = v.split(":", 2)
+                        return parts[2] if len(parts) >= 3 else v
+                    if voice.is_chatterbox_voice(v):
+                        name = v.split(":", 1)[1] if ":" in v else v
+                        return name.replace("-Female", "").replace("-Male", "")
+                    return (
+                        v.replace("Female", tr("Female"))
+                        .replace("Male", tr("Male"))
+                        .replace("Neural", "")
+                    )
+                friendly_names = {v: _friendly(v) for v in filtered_voices}
+
+            saved_voice_name = config.ui.get("voice_name", "")
             saved_voice_name_index = 0
 
-        # 确保有声音可选
-        if friendly_names:
-            selected_friendly_name = st.selectbox(
-                tr("Speech Synthesis"),
-                options=list(friendly_names.values()),
-                index=min(saved_voice_name_index, len(friendly_names) - 1)
-                if friendly_names
-                else 0,
-            )
+            # 检查保存的声音是否在当前筛选的声音列表中
+            if saved_voice_name in friendly_names:
+                saved_voice_name_index = list(friendly_names.keys()).index(saved_voice_name)
+            else:
+                # 如果不在，则根据当前UI语言选择一个默认声音
+                for i, v in enumerate(filtered_voices):
+                    if v.lower().startswith(st.session_state["ui_language"].lower()):
+                        saved_voice_name_index = i
+                        break
 
-            voice_name = list(friendly_names.keys())[
-                list(friendly_names.values()).index(selected_friendly_name)
-            ]
-            params.voice_name = voice_name
-            config.ui["voice_name"] = voice_name
-        else:
-            # 如果没有声音可选，显示提示信息
-            st.warning(
-                tr(
-                    "No voices available for the selected TTS server. Please select another server."
+            # 如果没有找到匹配的声音，使用第一个声音
+            if saved_voice_name_index >= len(friendly_names) and friendly_names:
+                saved_voice_name_index = 0
+
+            # 确保有声音可选
+            if friendly_names:
+                selected_friendly_name = st.selectbox(
+                    tr("Speech Synthesis"),
+                    options=list(friendly_names.values()),
+                    index=min(saved_voice_name_index, len(friendly_names) - 1)
+                    if friendly_names
+                    else 0,
                 )
-            )
-            voice_name = ""
-            params.voice_name = ""
-            config.ui["voice_name"] = ""
 
-        # 无配音模式会生成静音占位音频，不展示试听按钮，避免用户误以为需要测试声音。
-        if (
-            friendly_names
-            and selected_tts_server != voice.NO_VOICE_NAME
-            and st.button(tr("Play Voice"))
-        ):
-            if selected_tts_server == "chatterbox":
-                _sync_chatterbox_config_from_session_state()
-            play_content = params.video_subject
-            if not play_content:
-                play_content = params.video_script
-            if not play_content:
-                # For ElevenLabs voices, detect language from the display name
-                # so the test text matches the voice's language.
-                if voice.is_elevenlabs_voice(voice_name):
-                    parts = voice_name.split(":", 2)
-                    display = parts[2] if len(parts) >= 3 else ""
-                    _vi_chars = set("àáâãèéêìíòóôõùúýăđơưÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝĂĐƠƯ")
-                    if any(c in _vi_chars for c in display):
-                        play_content = "Xin chào, đây là đoạn âm thanh thử nghiệm giọng nói."
+                voice_name = list(friendly_names.keys())[
+                    list(friendly_names.values()).index(selected_friendly_name)
+                ]
+                params.voice_name = voice_name
+                config.ui["voice_name"] = voice_name
+            else:
+                # 如果没有声音可选，显示提示信息
+                st.warning(
+                    tr(
+                        "No voices available for the selected TTS server. Please select another server."
+                    )
+                )
+                voice_name = ""
+                params.voice_name = ""
+                config.ui["voice_name"] = ""
+
+            # 无配音模式会生成静音占位音频，不展示试听按钮，避免用户误以为需要测试声音。
+            if (
+                friendly_names
+                and selected_tts_server != voice.NO_VOICE_NAME
+                and st.button(tr("Play Voice"))
+            ):
+                if selected_tts_server == "chatterbox":
+                    _sync_chatterbox_config_from_session_state()
+                play_content = params.video_subject
+                if not play_content:
+                    play_content = params.video_script
+                if not play_content:
+                    # For ElevenLabs voices, detect language from the display name
+                    # so the test text matches the voice's language.
+                    if voice.is_elevenlabs_voice(voice_name):
+                        parts = voice_name.split(":", 2)
+                        display = parts[2] if len(parts) >= 3 else ""
+                        _vi_chars = set("àáâãèéêìíòóôõùúýăđơưÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝĂĐƠƯ")
+                        if any(c in _vi_chars for c in display):
+                            play_content = "Xin chào, đây là đoạn âm thanh thử nghiệm giọng nói."
+                        else:
+                            play_content = tr("Voice Example")
                     else:
                         play_content = tr("Voice Example")
-                else:
-                    play_content = tr("Voice Example")
-            with st.spinner(tr("Synthesizing Voice")):
-                temp_dir = utils.storage_dir("temp", create=True)
-                audio_file = os.path.join(temp_dir, f"tmp-voice-{str(uuid4())}.mp3")
-                sub_maker = voice.tts(
-                    text=play_content,
-                    voice_name=voice_name,
-                    voice_rate=params.voice_rate,
-                    voice_file=audio_file,
-                    voice_volume=params.voice_volume,
-                )
-                # if the voice file generation failed, try again with a default content.
-                if not sub_maker:
-                    play_content = "This is a example voice. if you hear this, the voice synthesis failed with the original content."
+                with st.spinner(tr("Synthesizing Voice")):
+                    temp_dir = utils.storage_dir("temp", create=True)
+                    audio_file = os.path.join(temp_dir, f"tmp-voice-{str(uuid4())}.mp3")
                     sub_maker = voice.tts(
                         text=play_content,
                         voice_name=voice_name,
@@ -1463,506 +1648,516 @@ with middle_panel:
                         voice_file=audio_file,
                         voice_volume=params.voice_volume,
                     )
-
-                if sub_maker and os.path.exists(audio_file):
-                    with open(audio_file, "rb") as f:
-                        audio_bytes = f.read()
-                    if audio_bytes:
-                        st.audio(
-                            audio_bytes,
-                            format=_detect_audio_mime(audio_file, audio_bytes),
+                    # if the voice file generation failed, try again with a default content.
+                    if not sub_maker:
+                        play_content = "This is a example voice. if you hear this, the voice synthesis failed with the original content."
+                        sub_maker = voice.tts(
+                            text=play_content,
+                            voice_name=voice_name,
+                            voice_rate=params.voice_rate,
+                            voice_file=audio_file,
+                            voice_volume=params.voice_volume,
                         )
-                    else:
-                        logger.error(f"voice preview audio file is empty: {audio_file}")
-                    if os.path.exists(audio_file):
-                        os.remove(audio_file)
 
-        # 当选择V2版本或者声音是V2声音时，显示服务区域和API key输入框
-        if selected_tts_server == "azure-tts-v2" or (
-            voice_name and voice.is_azure_v2_voice(voice_name)
-        ):
-            saved_azure_speech_region = config.azure.get("speech_region", "")
-            saved_azure_speech_key = config.azure.get("speech_key", "")
-            azure_speech_region = st.text_input(
-                tr("Speech Region"),
-                value=saved_azure_speech_region,
-                key="azure_speech_region_input",
+                    if sub_maker and os.path.exists(audio_file):
+                        with open(audio_file, "rb") as f:
+                            audio_bytes = f.read()
+                        if audio_bytes:
+                            st.audio(
+                                audio_bytes,
+                                format=_detect_audio_mime(audio_file, audio_bytes),
+                            )
+                        else:
+                            logger.error(f"voice preview audio file is empty: {audio_file}")
+                        if os.path.exists(audio_file):
+                            os.remove(audio_file)
+
+            # 当选择V2版本或者声音是V2声音时，显示服务区域和API key输入框
+            if selected_tts_server == "azure-tts-v2" or (
+                voice_name and voice.is_azure_v2_voice(voice_name)
+            ):
+                saved_azure_speech_region = config.azure.get("speech_region", "")
+                saved_azure_speech_key = config.azure.get("speech_key", "")
+                azure_speech_region = st.text_input(
+                    tr("Speech Region"),
+                    value=saved_azure_speech_region,
+                    key="azure_speech_region_input",
+                )
+                azure_speech_key = st.text_input(
+                    tr("Speech Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave Azure Speech",
+                    key="azure_speech_key_input",
+                )
+                config.azure["speech_region"] = azure_speech_region
+                if azure_speech_key:
+                    config.azure["speech_key"] = azure_speech_key
+
+            # 当选择硅基流动时，显示API key输入框和说明信息
+            if selected_tts_server == "siliconflow" or (
+                voice_name and voice.is_siliconflow_voice(voice_name)
+            ):
+                saved_siliconflow_api_key = config.siliconflow.get("api_key", "")
+
+                siliconflow_api_key = st.text_input(
+                    tr("SiliconFlow API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave SiliconFlow",
+                    key="siliconflow_api_key_input",
+                )
+
+                # 显示硅基流动的说明信息
+                st.info(
+                    tr("SiliconFlow TTS Settings")
+                    + ":\n"
+                    + "- "
+                    + tr("Speed: Range [0.25, 4.0], default is 1.0")
+                    + "\n"
+                    + "- "
+                    + tr("Volume: Uses Speech Volume setting, default 1.0 maps to gain 0")
+                )
+
+                if siliconflow_api_key:
+                    config.siliconflow["api_key"] = siliconflow_api_key
+
+            # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
+            # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
+            if selected_tts_server == "mimo-tts" or (
+                voice_name and voice.is_mimo_voice(voice_name)
+            ):
+                saved_mimo_api_key = config.app.get("mimo_api_key", "")
+
+                mimo_api_key = st.text_input(
+                    tr("MiMo API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Cole uma nova chave MiMo",
+                    key="mimo_tts_api_key_input",
+                )
+
+                st.info(
+                    tr("MiMo TTS Settings")
+                    + ":\n"
+                    + "- "
+                    + tr("Uses Xiaomi MiMo V2.5 TTS preset voices")
+                    + "\n"
+                    + "- "
+                    + tr("Speed and volume are currently handled by the provider defaults")
+                )
+
+                if mimo_api_key:
+                    config.app["mimo_api_key"] = mimo_api_key
+
+            # ElevenLabs API key section
+            if selected_tts_server == "elevenlabs" or (
+                voice_name and voice.is_elevenlabs_voice(voice_name)
+            ):
+                saved_elevenlabs_api_key = config.elevenlabs.get("api_key", "")
+
+                elevenlabs_api_key = st.text_input(
+                    tr("ElevenLabs API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Enter ElevenLabs API key for this session",
+                    key="elevenlabs_api_key_input",
+                )
+
+                _elevenlabs_models = [
+                    "eleven_multilingual_v2",
+                    "eleven_flash_v2_5",
+                    "eleven_v3",
+                ]
+                saved_elevenlabs_model = config.elevenlabs.get(
+                    "model_id", "eleven_multilingual_v2"
+                )
+                if saved_elevenlabs_model not in _elevenlabs_models:
+                    saved_elevenlabs_model = "eleven_multilingual_v2"
+                elevenlabs_model = st.selectbox(
+                    tr("ElevenLabs Model"),
+                    options=_elevenlabs_models,
+                    index=_elevenlabs_models.index(saved_elevenlabs_model),
+                    key="elevenlabs_model_select",
+                )
+                config.elevenlabs["model_id"] = elevenlabs_model
+
+                st.info(
+                    "ElevenLabs TTS Settings:\n"
+                    "- Get your API key at https://elevenlabs.io/app/settings/api-keys\n"
+                    "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
+                )
+
+                if elevenlabs_api_key and elevenlabs_api_key != saved_elevenlabs_api_key:
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("elevenlabs_voices_"):
+                            del st.session_state[k]
+
+                if elevenlabs_api_key:
+                    config.elevenlabs["api_key"] = elevenlabs_api_key
+
+            # Chatterbox API settings section (self-hosted, OpenAI-compatible)
+            if selected_tts_server == "chatterbox" or (
+                voice_name and voice.is_chatterbox_voice(voice_name)
+            ):
+                chatterbox_base_url = st.text_input(
+                    tr("Chatterbox Base URL"),
+                    value=config.chatterbox.get("base_url") or DEFAULT_CHATTERBOX_BASE_URL,
+                    key="chatterbox_base_url_input",
+                    placeholder="http://localhost:4123/v1",
+                )
+                config.chatterbox["base_url"] = (chatterbox_base_url or "").strip()
+
+                chatterbox_api_key = st.text_input(
+                    tr("Chatterbox API Key"),
+                    value="",
+                    type="password",
+                    placeholder="Optional Chatterbox API key for this session",
+                    key="chatterbox_api_key_input",
+                )
+                if chatterbox_api_key:
+                    config.chatterbox["api_key"] = chatterbox_api_key
+
+                chatterbox_model = st.text_input(
+                    tr("Chatterbox Model"),
+                    value=config.chatterbox.get("model_id") or DEFAULT_CHATTERBOX_MODEL,
+                    key="chatterbox_model_input",
+                )
+                config.chatterbox["model_id"] = (
+                    chatterbox_model or DEFAULT_CHATTERBOX_MODEL
+                ).strip()
+
+                _saved_chatterbox_voices = (
+                    _parse_chatterbox_voices(config.chatterbox.get("voices"))
+                    or DEFAULT_CHATTERBOX_VOICES
+                )
+                if isinstance(_saved_chatterbox_voices, list):
+                    _saved_chatterbox_voices = ", ".join(_saved_chatterbox_voices)
+                chatterbox_voices = st.text_input(
+                    tr("Chatterbox Voices"),
+                    value=str(_saved_chatterbox_voices or ""),
+                    key="chatterbox_voices_input",
+                    placeholder="default-Female, narrator-Male",
+                )
+                config.chatterbox["voices"] = _parse_chatterbox_voices(chatterbox_voices)
+
+                st.info(
+                    "Chatterbox TTS Settings (self-hosted):\n"
+                    "- Run an OpenAI-compatible Chatterbox server (e.g. "
+                    "devnen/Chatterbox-TTS-Server or travisvn/chatterbox-tts-api) and "
+                    "set Base URL to its /v1 endpoint\n"
+                    "- Voices is a comma-separated list of voice names your server "
+                    "exposes; add a -Female or -Male suffix only to label the gender "
+                    "in this dropdown\n"
+                    "- Speech Volume is not applied for Chatterbox (the OpenAI "
+                    "/audio/speech API has no volume field); use Speech Rate instead"
+                )
+
+            params.voice_volume = st.selectbox(
+                tr("Speech Volume"),
+                options=[0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
+                index=2,
             )
-            azure_speech_key = st.text_input(
-                tr("Speech Key"),
-                value="",
-                type="password",
-                placeholder="Cole uma nova chave Azure Speech",
-                key="azure_speech_key_input",
-            )
-            config.azure["speech_region"] = azure_speech_region
-            if azure_speech_key:
-                config.azure["speech_key"] = azure_speech_key
 
-        # 当选择硅基流动时，显示API key输入框和说明信息
-        if selected_tts_server == "siliconflow" or (
-            voice_name and voice.is_siliconflow_voice(voice_name)
-        ):
-            saved_siliconflow_api_key = config.siliconflow.get("api_key", "")
-
-            siliconflow_api_key = st.text_input(
-                tr("SiliconFlow API Key"),
-                value="",
-                type="password",
-                placeholder="Cole uma nova chave SiliconFlow",
-                key="siliconflow_api_key_input",
+            params.voice_rate = st.selectbox(
+                tr("Speech Rate"),
+                options=[0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
+                index=2,
             )
 
-            # 显示硅基流动的说明信息
-            st.info(
-                tr("SiliconFlow TTS Settings")
-                + ":\n"
-                + "- "
-                + tr("Speed: Range [0.25, 4.0], default is 1.0")
-                + "\n"
-                + "- "
-                + tr("Volume: Uses Speech Volume setting, default 1.0 maps to gain 0")
+            custom_audio_file_types = ["mp3", "wav", "m4a", "aac", "flac", "ogg"]
+            uploaded_audio_file = st.file_uploader(
+                tr("Custom Audio File"),
+                type=custom_audio_file_types
+                + [file_type.upper() for file_type in custom_audio_file_types],
+                accept_multiple_files=False,
+                key="custom_audio_file_uploader",
             )
+            if uploaded_audio_file:
+                st.audio(uploaded_audio_file, format="audio/mp3")
+                st.info(
+                    tr(
+                        "Custom audio will be used directly. TTS synthesis will be skipped for this task."
+                    )
+                )
 
-            if siliconflow_api_key:
-                config.siliconflow["api_key"] = siliconflow_api_key
-
-        # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
-        # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
-        if selected_tts_server == "mimo-tts" or (
-            voice_name and voice.is_mimo_voice(voice_name)
-        ):
-            saved_mimo_api_key = config.app.get("mimo_api_key", "")
-
-            mimo_api_key = st.text_input(
-                tr("MiMo API Key"),
-                value="",
-                type="password",
-                placeholder="Cole uma nova chave MiMo",
-                key="mimo_tts_api_key_input",
-            )
-
-            st.info(
-                tr("MiMo TTS Settings")
-                + ":\n"
-                + "- "
-                + tr("Uses Xiaomi MiMo V2.5 TTS preset voices")
-                + "\n"
-                + "- "
-                + tr("Speed and volume are currently handled by the provider defaults")
-            )
-
-            if mimo_api_key:
-                config.app["mimo_api_key"] = mimo_api_key
-
-        # ElevenLabs API key section
-        if selected_tts_server == "elevenlabs" or (
-            voice_name and voice.is_elevenlabs_voice(voice_name)
-        ):
-            saved_elevenlabs_api_key = config.elevenlabs.get("api_key", "")
-
-            elevenlabs_api_key = st.text_input(
-                tr("ElevenLabs API Key"),
-                value="",
-                type="password",
-                placeholder="Enter ElevenLabs API key for this session",
-                key="elevenlabs_api_key_input",
-            )
-
-            _elevenlabs_models = [
-                "eleven_multilingual_v2",
-                "eleven_flash_v2_5",
-                "eleven_v3",
+            bgm_options = [
+                (tr("No Background Music"), ""),
+                (tr("Random Background Music"), "random"),
+                (tr("Custom Background Music"), "custom"),
             ]
-            saved_elevenlabs_model = config.elevenlabs.get(
-                "model_id", "eleven_multilingual_v2"
+            selected_index = st.selectbox(
+                tr("Background Music"),
+                index=1,
+                options=range(
+                    len(bgm_options)
+                ),  # Use the index as the internal option value
+                format_func=lambda x: bgm_options[x][
+                    0
+                ],  # The label is displayed to the user
             )
-            if saved_elevenlabs_model not in _elevenlabs_models:
-                saved_elevenlabs_model = "eleven_multilingual_v2"
-            elevenlabs_model = st.selectbox(
-                tr("ElevenLabs Model"),
-                options=_elevenlabs_models,
-                index=_elevenlabs_models.index(saved_elevenlabs_model),
-                key="elevenlabs_model_select",
-            )
-            config.elevenlabs["model_id"] = elevenlabs_model
+            # Get the selected background music type
+            params.bgm_type = bgm_options[selected_index][1]
 
-            st.info(
-                "ElevenLabs TTS Settings:\n"
-                "- Get your API key at https://elevenlabs.io/app/settings/api-keys\n"
-                "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
-            )
-
-            if elevenlabs_api_key and elevenlabs_api_key != saved_elevenlabs_api_key:
-                for k in list(st.session_state.keys()):
-                    if k.startswith("elevenlabs_voices_"):
-                        del st.session_state[k]
-
-            if elevenlabs_api_key:
-                config.elevenlabs["api_key"] = elevenlabs_api_key
-
-        # Chatterbox API settings section (self-hosted, OpenAI-compatible)
-        if selected_tts_server == "chatterbox" or (
-            voice_name and voice.is_chatterbox_voice(voice_name)
-        ):
-            chatterbox_base_url = st.text_input(
-                tr("Chatterbox Base URL"),
-                value=config.chatterbox.get("base_url") or DEFAULT_CHATTERBOX_BASE_URL,
-                key="chatterbox_base_url_input",
-                placeholder="http://localhost:4123/v1",
-            )
-            config.chatterbox["base_url"] = (chatterbox_base_url or "").strip()
-
-            chatterbox_api_key = st.text_input(
-                tr("Chatterbox API Key"),
-                value="",
-                type="password",
-                placeholder="Optional Chatterbox API key for this session",
-                key="chatterbox_api_key_input",
-            )
-            if chatterbox_api_key:
-                config.chatterbox["api_key"] = chatterbox_api_key
-
-            chatterbox_model = st.text_input(
-                tr("Chatterbox Model"),
-                value=config.chatterbox.get("model_id") or DEFAULT_CHATTERBOX_MODEL,
-                key="chatterbox_model_input",
-            )
-            config.chatterbox["model_id"] = (
-                chatterbox_model or DEFAULT_CHATTERBOX_MODEL
-            ).strip()
-
-            _saved_chatterbox_voices = (
-                _parse_chatterbox_voices(config.chatterbox.get("voices"))
-                or DEFAULT_CHATTERBOX_VOICES
-            )
-            if isinstance(_saved_chatterbox_voices, list):
-                _saved_chatterbox_voices = ", ".join(_saved_chatterbox_voices)
-            chatterbox_voices = st.text_input(
-                tr("Chatterbox Voices"),
-                value=str(_saved_chatterbox_voices or ""),
-                key="chatterbox_voices_input",
-                placeholder="default-Female, narrator-Male",
-            )
-            config.chatterbox["voices"] = _parse_chatterbox_voices(chatterbox_voices)
-
-            st.info(
-                "Chatterbox TTS Settings (self-hosted):\n"
-                "- Run an OpenAI-compatible Chatterbox server (e.g. "
-                "devnen/Chatterbox-TTS-Server or travisvn/chatterbox-tts-api) and "
-                "set Base URL to its /v1 endpoint\n"
-                "- Voices is a comma-separated list of voice names your server "
-                "exposes; add a -Female or -Male suffix only to label the gender "
-                "in this dropdown\n"
-                "- Speech Volume is not applied for Chatterbox (the OpenAI "
-                "/audio/speech API has no volume field); use Speech Rate instead"
-            )
-
-        params.voice_volume = st.selectbox(
-            tr("Speech Volume"),
-            options=[0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
-            index=2,
-        )
-
-        params.voice_rate = st.selectbox(
-            tr("Speech Rate"),
-            options=[0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
-            index=2,
-        )
-
-        custom_audio_file_types = ["mp3", "wav", "m4a", "aac", "flac", "ogg"]
-        uploaded_audio_file = st.file_uploader(
-            tr("Custom Audio File"),
-            type=custom_audio_file_types
-            + [file_type.upper() for file_type in custom_audio_file_types],
-            accept_multiple_files=False,
-            key="custom_audio_file_uploader",
-        )
-        if uploaded_audio_file:
-            st.audio(uploaded_audio_file, format="audio/mp3")
-            st.info(
-                tr(
-                    "Custom audio will be used directly. TTS synthesis will be skipped for this task."
+            # Show or hide components based on the selection
+            if params.bgm_type == "custom":
+                custom_bgm_file = st.text_input(
+                    tr("Custom Background Music File"), key="custom_bgm_file_input"
                 )
+                if custom_bgm_file:
+                    # 这里不直接用 os.path.exists 判断，因为用户常见输入是
+                    # output000.mp3，这个文件名需要由服务层映射到 resource/songs
+                    # 目录后再校验。服务层会统一限制目录和文件类型，避免任意路径读取。
+                    params.bgm_file = custom_bgm_file.strip()
+                    # st.write(f":red[已选择自定义背景音乐]：**{custom_bgm_file}**")
+            params.bgm_volume = st.selectbox(
+                tr("Background Music Volume"),
+                options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+                index=2,
             )
 
-        bgm_options = [
-            (tr("No Background Music"), ""),
-            (tr("Random Background Music"), "random"),
-            (tr("Custom Background Music"), "custom"),
-        ]
-        selected_index = st.selectbox(
-            tr("Background Music"),
-            index=1,
-            options=range(
-                len(bgm_options)
-            ),  # Use the index as the internal option value
-            format_func=lambda x: bgm_options[x][
-                0
-            ],  # The label is displayed to the user
-        )
-        # Get the selected background music type
-        params.bgm_type = bgm_options[selected_index][1]
-
-        # Show or hide components based on the selection
-        if params.bgm_type == "custom":
-            custom_bgm_file = st.text_input(
-                tr("Custom Background Music File"), key="custom_bgm_file_input"
+    with right_panel:
+        with st.container(border=True):
+            st.write(tr("Subtitle Settings"))
+            params.subtitle_enabled = st.checkbox(tr("Enable Subtitles"), value=True)
+            font_names = get_all_fonts()
+            saved_font_name = config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
+            saved_font_name_index = 0
+            if saved_font_name in font_names:
+                saved_font_name_index = font_names.index(saved_font_name)
+            params.font_name = st.selectbox(
+                tr("Font"), font_names, index=saved_font_name_index
             )
-            if custom_bgm_file:
-                # 这里不直接用 os.path.exists 判断，因为用户常见输入是
-                # output000.mp3，这个文件名需要由服务层映射到 resource/songs
-                # 目录后再校验。服务层会统一限制目录和文件类型，避免任意路径读取。
-                params.bgm_file = custom_bgm_file.strip()
-                # st.write(f":red[已选择自定义背景音乐]：**{custom_bgm_file}**")
-        params.bgm_volume = st.selectbox(
-            tr("Background Music Volume"),
-            options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-            index=2,
-        )
+            config.ui["font_name"] = params.font_name
 
-with right_panel:
-    with st.container(border=True):
-        st.write(tr("Subtitle Settings"))
-        params.subtitle_enabled = st.checkbox(tr("Enable Subtitles"), value=True)
-        font_names = get_all_fonts()
-        saved_font_name = config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
-        saved_font_name_index = 0
-        if saved_font_name in font_names:
-            saved_font_name_index = font_names.index(saved_font_name)
-        params.font_name = st.selectbox(
-            tr("Font"), font_names, index=saved_font_name_index
-        )
-        config.ui["font_name"] = params.font_name
-
-        subtitle_positions = [
-            (tr("Top"), "top"),
-            (tr("Center"), "center"),
-            (tr("Bottom"), "bottom"),
-            (tr("Custom"), "custom"),
-        ]
-        saved_subtitle_position = config.ui.get("subtitle_position", "bottom")
-        saved_position_index = 2
-        for i, (_, pos_value) in enumerate(subtitle_positions):
-            if pos_value == saved_subtitle_position:
-                saved_position_index = i
-                break
-        selected_index = st.selectbox(
-            tr("Position"),
-            index=saved_position_index,
-            options=range(len(subtitle_positions)),
-            format_func=lambda x: subtitle_positions[x][0],
-        )
-        params.subtitle_position = subtitle_positions[selected_index][1]
-        config.ui["subtitle_position"] = params.subtitle_position
-
-        if params.subtitle_position == "custom":
-            saved_custom_position = config.ui.get("custom_position", 70.0)
-            custom_position = st.text_input(
-                tr("Custom Position (% from top)"),
-                value=str(saved_custom_position),
-                key="custom_position_input",
+            subtitle_positions = [
+                (tr("Top"), "top"),
+                (tr("Center"), "center"),
+                (tr("Bottom"), "bottom"),
+                (tr("Custom"), "custom"),
+            ]
+            saved_subtitle_position = config.ui.get("subtitle_position", "bottom")
+            saved_position_index = 2
+            for i, (_, pos_value) in enumerate(subtitle_positions):
+                if pos_value == saved_subtitle_position:
+                    saved_position_index = i
+                    break
+            selected_index = st.selectbox(
+                tr("Position"),
+                index=saved_position_index,
+                options=range(len(subtitle_positions)),
+                format_func=lambda x: subtitle_positions[x][0],
             )
-            try:
-                params.custom_position = float(custom_position)
-                if params.custom_position < 0 or params.custom_position > 100:
-                    st.error(tr("Please enter a value between 0 and 100"))
-                else:
-                    config.ui["custom_position"] = params.custom_position
-            except ValueError:
-                st.error(tr("Please enter a valid number"))
+            params.subtitle_position = subtitle_positions[selected_index][1]
+            config.ui["subtitle_position"] = params.subtitle_position
 
-        font_cols = st.columns([0.3, 0.7])
-        with font_cols[0]:
-            saved_text_fore_color = config.ui.get("text_fore_color", "#FFFFFF")
-            params.text_fore_color = st.color_picker(
-                tr("Font Color"), saved_text_fore_color
-            )
-            config.ui["text_fore_color"] = params.text_fore_color
-
-        with font_cols[1]:
-            saved_font_size = config.ui.get("font_size", 60)
-            params.font_size = st.slider(tr("Font Size"), 30, 100, saved_font_size)
-            config.ui["font_size"] = params.font_size
-
-        stroke_cols = st.columns([0.3, 0.7])
-        with stroke_cols[0]:
-            params.stroke_color = st.color_picker(tr("Stroke Color"), "#000000")
-        with stroke_cols[1]:
-            params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
-
-        subtitle_bg_cols = st.columns([0.4, 0.6])
-        saved_subtitle_background_enabled = config.ui.get(
-            "subtitle_background_enabled", True
-        )
-        with subtitle_bg_cols[0]:
-            subtitle_background_enabled = st.checkbox(
-                tr("Enable Subtitle Background"),
-                value=saved_subtitle_background_enabled,
-            )
-        config.ui["subtitle_background_enabled"] = subtitle_background_enabled
-        if subtitle_background_enabled:
-            with subtitle_bg_cols[1]:
-                saved_subtitle_background_color = config.ui.get(
-                    "subtitle_background_color", "#000000"
+            if params.subtitle_position == "custom":
+                saved_custom_position = config.ui.get("custom_position", 70.0)
+                custom_position = st.text_input(
+                    tr("Custom Position (% from top)"),
+                    value=str(saved_custom_position),
+                    key="custom_position_input",
                 )
-                params.text_background_color = st.color_picker(
-                    tr("Subtitle Background Color"),
-                    saved_subtitle_background_color,
+                try:
+                    params.custom_position = float(custom_position)
+                    if params.custom_position < 0 or params.custom_position > 100:
+                        st.error(tr("Please enter a value between 0 and 100"))
+                    else:
+                        config.ui["custom_position"] = params.custom_position
+                except ValueError:
+                    st.error(tr("Please enter a valid number"))
+
+            font_cols = st.columns([0.3, 0.7])
+            with font_cols[0]:
+                saved_text_fore_color = config.ui.get("text_fore_color", "#FFFFFF")
+                params.text_fore_color = st.color_picker(
+                    tr("Font Color"), saved_text_fore_color
                 )
-                config.ui["subtitle_background_color"] = params.text_background_color
-        else:
-            params.text_background_color = False
+                config.ui["text_fore_color"] = params.text_fore_color
 
-        saved_rounded_subtitle_background = config.ui.get(
-            "rounded_subtitle_background", False
-        )
-        # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件并保留原配置，
-        # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
-        params.rounded_subtitle_background = st.checkbox(
-            tr("Rounded Subtitle Background"),
-            value=(
-                saved_rounded_subtitle_background
-                if subtitle_background_enabled
-                else False
-            ),
-            help=tr("Rounded Subtitle Background Help"),
-            disabled=not subtitle_background_enabled,
-        )
-        if subtitle_background_enabled:
-            config.ui["rounded_subtitle_background"] = (
-                params.rounded_subtitle_background
+            with font_cols[1]:
+                saved_font_size = config.ui.get("font_size", 60)
+                params.font_size = st.slider(tr("Font Size"), 30, 100, saved_font_size)
+                config.ui["font_size"] = params.font_size
+
+            stroke_cols = st.columns([0.3, 0.7])
+            with stroke_cols[0]:
+                params.stroke_color = st.color_picker(tr("Stroke Color"), "#000000")
+            with stroke_cols[1]:
+                params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
+
+            subtitle_bg_cols = st.columns([0.4, 0.6])
+            saved_subtitle_background_enabled = config.ui.get(
+                "subtitle_background_enabled", True
             )
-    with st.expander(tr("Click to show API Key management"), expanded=False):
-        st.subheader(tr("Manage Pexels, Pixabay and Coverr API Keys"))
-
-        col1, col2, col3 = st.tabs([
-            tr("Pexels API Keys"),
-            tr("Pixabay API Keys"),
-            tr("Coverr API Keys"),
-        ])
-
-        with col1:
-            st.subheader(tr("Pexels API Keys"))
-            if config.app["pexels_api_keys"]:
-                st.write(tr("Current Keys:"))
-                for key in config.app["pexels_api_keys"]:
-                    st.code(key)
+            with subtitle_bg_cols[0]:
+                subtitle_background_enabled = st.checkbox(
+                    tr("Enable Subtitle Background"),
+                    value=saved_subtitle_background_enabled,
+                )
+            config.ui["subtitle_background_enabled"] = subtitle_background_enabled
+            if subtitle_background_enabled:
+                with subtitle_bg_cols[1]:
+                    saved_subtitle_background_color = config.ui.get(
+                        "subtitle_background_color", "#000000"
+                    )
+                    params.text_background_color = st.color_picker(
+                        tr("Subtitle Background Color"),
+                        saved_subtitle_background_color,
+                    )
+                    config.ui["subtitle_background_color"] = params.text_background_color
             else:
-                st.info(tr("No Pexels API Keys currently"))
+                params.text_background_color = False
 
-            new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
-            if st.button(tr("Add Pexels API Key")):
-                if new_key and new_key not in config.app["pexels_api_keys"]:
-                    config.app["pexels_api_keys"].append(new_key)
-                    config.save_config()
-                    st.success(tr("Pexels API Key added successfully"))
-                elif new_key in config.app["pexels_api_keys"]:
-                    st.warning(tr("This API Key already exists"))
-                else:
-                    st.error(tr("Please enter a valid API Key"))
-
-            if config.app["pexels_api_keys"]:
-                delete_key = st.selectbox(
-                    tr("Select Pexels API Key to delete"), config.app["pexels_api_keys"], key="pexels_delete_key"
+            saved_rounded_subtitle_background = config.ui.get(
+                "rounded_subtitle_background", False
+            )
+            # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件并保留原配置，
+            # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
+            params.rounded_subtitle_background = st.checkbox(
+                tr("Rounded Subtitle Background"),
+                value=(
+                    saved_rounded_subtitle_background
+                    if subtitle_background_enabled
+                    else False
+                ),
+                help=tr("Rounded Subtitle Background Help"),
+                disabled=not subtitle_background_enabled,
+            )
+            if subtitle_background_enabled:
+                config.ui["rounded_subtitle_background"] = (
+                    params.rounded_subtitle_background
                 )
-                if st.button(tr("Delete Selected Pexels API Key")):
-                    config.app["pexels_api_keys"].remove(delete_key)
-                    config.save_config()
-                    st.success(tr("Pexels API Key deleted successfully"))
+        with st.expander(tr("Click to show API Key management"), expanded=False):
+            st.subheader(tr("Manage Pexels, Pixabay and Coverr API Keys"))
 
-        with col2:
-            st.subheader(tr("Pixabay API Keys"))
+            col1, col2, col3 = st.tabs([
+                tr("Pexels API Keys"),
+                tr("Pixabay API Keys"),
+                tr("Coverr API Keys"),
+            ])
 
-            if config.app["pixabay_api_keys"]:
-                st.write(tr("Current Keys:"))
-                for key in config.app["pixabay_api_keys"]:
-                    st.code(key)
-            else:
-                st.info(tr("No Pixabay API Keys currently"))
-
-            new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
-            if st.button(tr("Add Pixabay API Key")):
-                if new_key and new_key not in config.app["pixabay_api_keys"]:
-                    config.app["pixabay_api_keys"].append(new_key)
-                    config.save_config()
-                    st.success(tr("Pixabay API Key added successfully"))
-                elif new_key in config.app["pixabay_api_keys"]:
-                    st.warning(tr("This API Key already exists"))
+            with col1:
+                st.subheader(tr("Pexels API Keys"))
+                if config.app["pexels_api_keys"]:
+                    st.write(tr("Current Keys:"))
+                    for key in config.app["pexels_api_keys"]:
+                        st.code(_mask_secret(key))
                 else:
-                    st.error(tr("Please enter a valid API Key"))
+                    st.info(tr("No Pexels API Keys currently"))
 
-            if config.app["pixabay_api_keys"]:
-                delete_key = st.selectbox(
-                    tr("Select Pixabay API Key to delete"), config.app["pixabay_api_keys"], key="pixabay_delete_key"
-                )
-                if st.button(tr("Delete Selected Pixabay API Key")):
-                    config.app["pixabay_api_keys"].remove(delete_key)
-                    config.save_config()
-                    st.success(tr("Pixabay API Key deleted successfully"))
+                new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
+                if st.button(tr("Add Pexels API Key")):
+                    if new_key and new_key not in config.app["pexels_api_keys"]:
+                        config.app["pexels_api_keys"].append(new_key)
+                        config.save_config()
+                        st.success(tr("Pexels API Key added successfully"))
+                    elif new_key in config.app["pexels_api_keys"]:
+                        st.warning(tr("This API Key already exists"))
+                    else:
+                        st.error(tr("Please enter a valid API Key"))
 
-        with col3:
-            st.subheader(tr("Coverr API Keys"))
+                if config.app["pexels_api_keys"]:
+                    delete_key = st.selectbox(
+                        tr("Select Pexels API Key to delete"), config.app["pexels_api_keys"], key="pexels_delete_key"
+                    )
+                    if st.button(tr("Delete Selected Pexels API Key")):
+                        config.app["pexels_api_keys"].remove(delete_key)
+                        config.save_config()
+                        st.success(tr("Pexels API Key deleted successfully"))
 
-            # 与 pexels/pixabay 不同,coverr_api_keys 是 PR 新增配置项,
-            # 老用户的 config.toml 不一定包含,这里先兜底初始化为空列表,
-            # 防止下面 .append / 索引访问触发 KeyError。
-            if "coverr_api_keys" not in config.app or config.app["coverr_api_keys"] is None:
-                config.app["coverr_api_keys"] = []
+            with col2:
+                st.subheader(tr("Pixabay API Keys"))
 
-            if config.app["coverr_api_keys"]:
-                st.write(tr("Current Keys:"))
-                for key in config.app["coverr_api_keys"]:
-                    st.code(key)
-            else:
-                st.info(tr("No Coverr API Keys currently"))
-
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
-            if st.button(tr("Add Coverr API Key")):
-                if new_key and new_key not in config.app["coverr_api_keys"]:
-                    config.app["coverr_api_keys"].append(new_key)
-                    config.save_config()
-                    st.success(tr("Coverr API Key added successfully"))
-                elif new_key in config.app["coverr_api_keys"]:
-                    st.warning(tr("This API Key already exists"))
+                if config.app["pixabay_api_keys"]:
+                    st.write(tr("Current Keys:"))
+                    for key in config.app["pixabay_api_keys"]:
+                        st.code(_mask_secret(key))
                 else:
-                    st.error(tr("Please enter a valid API Key"))
+                    st.info(tr("No Pixabay API Keys currently"))
 
-            if config.app["coverr_api_keys"]:
-                delete_key = st.selectbox(
-                    tr("Select Coverr API Key to delete"), config.app["coverr_api_keys"], key="coverr_delete_key"
-                )
-                if st.button(tr("Delete Selected Coverr API Key")):
-                    config.app["coverr_api_keys"].remove(delete_key)
-                    config.save_config()
-                    st.success(tr("Coverr API Key deleted successfully"))
+                new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
+                if st.button(tr("Add Pixabay API Key")):
+                    if new_key and new_key not in config.app["pixabay_api_keys"]:
+                        config.app["pixabay_api_keys"].append(new_key)
+                        config.save_config()
+                        st.success(tr("Pixabay API Key added successfully"))
+                    elif new_key in config.app["pixabay_api_keys"]:
+                        st.warning(tr("This API Key already exists"))
+                    else:
+                        st.error(tr("Please enter a valid API Key"))
 
-start_button = st.button(tr("Generate Video"), use_container_width=True, type="primary")
+                if config.app["pixabay_api_keys"]:
+                    delete_key = st.selectbox(
+                        tr("Select Pixabay API Key to delete"), config.app["pixabay_api_keys"], key="pixabay_delete_key"
+                    )
+                    if st.button(tr("Delete Selected Pixabay API Key")):
+                        config.app["pixabay_api_keys"].remove(delete_key)
+                        config.save_config()
+                        st.success(tr("Pixabay API Key deleted successfully"))
+
+            with col3:
+                st.subheader(tr("Coverr API Keys"))
+
+                # 与 pexels/pixabay 不同,coverr_api_keys 是 PR 新增配置项,
+                # 老用户的 config.toml 不一定包含,这里先兜底初始化为空列表,
+                # 防止下面 .append / 索引访问触发 KeyError。
+                if "coverr_api_keys" not in config.app or config.app["coverr_api_keys"] is None:
+                    config.app["coverr_api_keys"] = []
+
+                if config.app["coverr_api_keys"]:
+                    st.write(tr("Current Keys:"))
+                    for key in config.app["coverr_api_keys"]:
+                        st.code(_mask_secret(key))
+                else:
+                    st.info(tr("No Coverr API Keys currently"))
+
+                new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
+                if st.button(tr("Add Coverr API Key")):
+                    if new_key and new_key not in config.app["coverr_api_keys"]:
+                        config.app["coverr_api_keys"].append(new_key)
+                        config.save_config()
+                        st.success(tr("Coverr API Key added successfully"))
+                    elif new_key in config.app["coverr_api_keys"]:
+                        st.warning(tr("This API Key already exists"))
+                    else:
+                        st.error(tr("Please enter a valid API Key"))
+
+                if config.app["coverr_api_keys"]:
+                    delete_key = st.selectbox(
+                        tr("Select Coverr API Key to delete"), config.app["coverr_api_keys"], key="coverr_delete_key"
+                    )
+                    if st.button(tr("Delete Selected Coverr API Key")):
+                        config.app["coverr_api_keys"].remove(delete_key)
+                        config.save_config()
+                        st.success(tr("Coverr API Key deleted successfully"))
+
+start_button = st.button("Gerar vídeo real", use_container_width=True, type="primary")
 if start_button:
     config.save_config()
     task_id = str(uuid4())
     if not params.video_subject and not params.video_script:
-        st.error(tr("Video Script and Subject Cannot Both Be Empty"))
+        st.error("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
         scroll_to_bottom()
         st.stop()
 
     if params.video_source not in ["pexels", "pixabay", "coverr", "local"]:
-        st.error(tr("Please Select a Valid Video Source"))
+        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
         scroll_to_bottom()
         st.stop()
 
     if params.video_source == "pexels" and not config.app.get("pexels_api_keys", ""):
-        st.error(tr("Please Enter the Pexels API Key"))
+        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
         scroll_to_bottom()
         st.stop()
 
     if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
-        st.error(tr("Please Enter the Pixabay API Key"))
+        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
         scroll_to_bottom()
         st.stop()
 
     if params.video_source == "coverr" and not config.app.get("coverr_api_keys", ""):
-        st.error(tr("Please Enter the Coverr API Key"))
+        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
         scroll_to_bottom()
         st.stop()
 
@@ -2024,10 +2219,10 @@ if start_button:
 
     st.toast(tr("Generating Video"))
     logger.info(tr("Start Generating Video"))
-    logger.info(utils.to_json(params))
+    logger.info(f"Cenara payload pronto: source={params.video_source}, aspect={params.video_aspect}, has_subject={bool(params.video_subject)}, has_script={bool(params.video_script)}, has_voice={bool(params.voice_name)}")
     scroll_to_bottom()
 
-    result = tm.start(task_id=task_id, params=params)
+    result = cenara_trigger_real_generation(task_id=task_id, payload=params)
     if not result or "videos" not in result:
         st.error(tr("Video Generation Failed"))
         logger.error(tr("Video Generation Failed"))
@@ -2035,7 +2230,13 @@ if start_button:
         st.stop()
 
     video_files = result.get("videos", [])
-    st.success(tr("Video Generation Completed"))
+    latest_mp4s = cenara_find_latest_mp4(task_id=task_id, limit=1)
+    if not latest_mp4s:
+        st.error("A geração terminou, mas nenhum MP4 foi encontrado. Verifique o diretório de saída.")
+        scroll_to_bottom()
+        st.stop()
+    st.session_state["cenara_latest_mp4"] = str(latest_mp4s[0])
+    st.success("Vídeo real gerado com sucesso.")
     try:
         if video_files:
             player_cols = st.columns(len(video_files) * 2 + 1)
