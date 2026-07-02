@@ -383,10 +383,228 @@ support_locales = [
 
 
 
-def _has_configured_secret(value) -> bool:
+CENARA_PROVIDER_ENV_ALIASES = {
+    "openai": ("OPENAI_API_KEY", "OPENAI_KEY"),
+    "pexels": ("PEXELS_API_KEY",),
+    "pixabay": ("PIXABAY_API_KEY",),
+    "coverr": ("COVER_API_KEY", "COVERR_API_KEY"),
+    "elevenlabs": ("ELEVENLABS_API_KEY", "ELEVEN_API_KEY"),
+}
+
+CENARA_LLM_PROVIDER_ENV_ALIASES = {
+    "openai": ("OPENAI_API_KEY", "OPENAI_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "aihubmix": ("AIHUBMIX_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "azure": ("AZURE_OPENAI_API_KEY",),
+    "azure-openai": ("AZURE_OPENAI_API_KEY",),
+    "azure_openai": ("AZURE_OPENAI_API_KEY",),
+    "openai_azure": ("AZURE_OPENAI_API_KEY",),
+}
+
+CENARA_LLM_PROVIDER_CONFIG_KEYS = {
+    "openai": ("openai_api_key",),
+    "deepseek": ("deepseek_api_key",),
+    "aihubmix": ("aihubmix_api_key",),
+    "gemini": ("gemini_api_key", "google_api_key"),
+    "google": ("google_api_key", "gemini_api_key"),
+    "azure": ("azure_api_key", "azure_openai_api_key"),
+    "azure-openai": ("azure_openai_api_key", "azure_api_key"),
+    "azure_openai": ("azure_openai_api_key", "azure_api_key"),
+    "openai_azure": ("azure_openai_api_key", "azure_api_key"),
+}
+
+CENARA_ENV_RUNTIME_VALUES = {"app": {}, "elevenlabs": {}}
+
+CENARA_MASKED_SECRET_MARKERS = (
+    "cole sua nova chave",
+    "paste your new key",
+    "sua chave",
+    "your api key",
+    "api key",
+    "password",
+    "secret",
+)
+
+
+def _is_missing_secret_value(value) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if any(marker in lowered for marker in CENARA_MASKED_SECRET_MARKERS):
+        return True
+    visible = text.replace("•", "").replace("*", "").replace("x", "").replace("X", "").strip()
+    return not visible
+
+
+def _normalize_secret_values(value) -> list[str]:
     if isinstance(value, (list, tuple, set)):
-        return any(str(item).strip() for item in value)
-    return bool(str(value or "").strip())
+        candidates = value
+    elif isinstance(value, str) and "," in value:
+        candidates = value.split(",")
+    else:
+        candidates = [value]
+    return [str(item).strip() for item in candidates if not _is_missing_secret_value(item)]
+
+
+def _dedupe_preserving_order(values) -> list[str]:
+    unique_values = []
+    seen = set()
+    for value in values:
+        for normalized in _normalize_secret_values(value):
+            if normalized not in seen:
+                unique_values.append(normalized)
+                seen.add(normalized)
+    return unique_values
+
+
+def _has_configured_secret(value) -> bool:
+    return bool(_normalize_secret_values(value))
+
+
+def _provider_secret_values_from_env(provider: str) -> list[str]:
+    return _dedupe_preserving_order(os.environ.get(env_name) for env_name in CENARA_PROVIDER_ENV_ALIASES.get(provider, ()))
+
+
+def _provider_secret_from_env(provider: str) -> str:
+    values = _provider_secret_values_from_env(provider)
+    return values[0] if values else ""
+
+
+def _secret_values_from_env_names(env_names) -> list[str]:
+    return _dedupe_preserving_order(os.environ.get(env_name) for env_name in env_names)
+
+
+def _provider_secret_values_from_session(keys) -> list[str]:
+    return _dedupe_preserving_order(st.session_state.get(key) for key in keys)
+
+
+def _provider_secret_from_session(keys) -> str:
+    values = _provider_secret_values_from_session(keys)
+    return values[0] if values else ""
+
+
+def _llm_provider_id_normalized(llm_provider_id: str) -> str:
+    return (llm_provider_id or "openai").strip().lower().replace(" ", "_")
+
+
+def _llm_provider_config_keys(llm_provider_id: str) -> tuple[str, ...]:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    return CENARA_LLM_PROVIDER_CONFIG_KEYS.get(provider_id, (f"{provider_id}_api_key",))
+
+
+def _llm_provider_env_values(llm_provider_id: str) -> list[str]:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    return _secret_values_from_env_names(CENARA_LLM_PROVIDER_ENV_ALIASES.get(provider_id, ()))
+
+
+def _llm_provider_secret(llm_provider_id: str) -> str:
+    provider_id = _llm_provider_id_normalized(llm_provider_id)
+    if provider_id == "ollama":
+        return "local"
+    env_values = _llm_provider_env_values(provider_id)
+    if env_values:
+        return env_values[0]
+    if provider_id in CENARA_LLM_PROVIDER_CONFIG_KEYS:
+        session_value = _provider_secret_from_session((f"{provider_id}_api_key_input",))
+        if session_value:
+            return session_value
+    for cfg_key in _llm_provider_config_keys(provider_id):
+        config_values = _normalize_secret_values(config.app.get(cfg_key))
+        if config_values:
+            return config_values[0]
+    return ""
+
+
+def _provider_secret(provider: str, session_keys=(), config_value=None) -> str:
+    values = _provider_secret_list(provider, session_keys=session_keys, config_value=config_value)
+    return values[0] if values else ""
+
+
+def _provider_secret_list(provider: str, session_keys=(), config_value=None) -> list[str]:
+    return _dedupe_preserving_order(
+        _provider_secret_values_from_env(provider)
+        + _provider_secret_values_from_session(session_keys)
+        + _normalize_secret_values(config_value)
+    )
+
+
+def _remember_env_runtime_value(section: str, key: str, values) -> None:
+    env_values = _dedupe_preserving_order(values)
+    if env_values:
+        CENARA_ENV_RUNTIME_VALUES.setdefault(section, {})[key] = env_values
+
+
+def _strip_env_runtime_values(value, env_values):
+    if isinstance(value, (list, tuple, set)):
+        filtered = [item for item in _normalize_secret_values(value) if item not in env_values]
+        return filtered
+    values = _normalize_secret_values(value)
+    filtered = [item for item in values if item not in env_values]
+    if isinstance(value, str) and "," in value:
+        return ",".join(filtered)
+    return filtered[0] if filtered else ""
+
+
+def _install_cenara_safe_config_save() -> None:
+    if getattr(config, "_cenara_safe_save_installed", False):
+        return
+    original_save_config = config.save_config
+
+    def safe_save_config(*args, **kwargs):
+        restore_values = {"app": {}, "elevenlabs": {}}
+        for section_name, env_keys in CENARA_ENV_RUNTIME_VALUES.items():
+            section = getattr(config, section_name)
+            for key, env_values in env_keys.items():
+                restore_values[section_name][key] = section.get(key)
+                section[key] = _strip_env_runtime_values(section.get(key), env_values)
+        try:
+            return original_save_config(*args, **kwargs)
+        finally:
+            for section_name, section_values in restore_values.items():
+                section = getattr(config, section_name)
+                for key, value in section_values.items():
+                    section[key] = value
+
+    config.save_config = safe_save_config
+    config._cenara_safe_save_installed = True
+
+
+def cenara_apply_env_provider_keys() -> None:
+    """Expose Railway env keys to the runtime config without printing their values."""
+    _install_cenara_safe_config_save()
+    llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
+    llm_env_values = _llm_provider_env_values(llm_provider_id)
+    if llm_env_values:
+        llm_cfg_key = _llm_provider_config_keys(llm_provider_id)[0]
+        config.app[llm_cfg_key] = llm_env_values[0]
+        _remember_env_runtime_value("app", llm_cfg_key, llm_env_values)
+        config.app["llm_provider"] = config.app.get("llm_provider") or "openai"
+    provider_config_map = {
+        "pexels": "pexels_api_keys",
+        "pixabay": "pixabay_api_keys",
+        "coverr": "coverr_api_keys",
+    }
+    for provider, cfg_key in provider_config_map.items():
+        env_values = _provider_secret_values_from_env(provider)
+        keys = _provider_secret_list(provider, config_value=config.app.get(cfg_key))
+        if keys:
+            config.app[cfg_key] = keys
+        _remember_env_runtime_value("app", cfg_key, env_values)
+    elevenlabs_env_values = _provider_secret_values_from_env("elevenlabs")
+    elevenlabs_key = _provider_secret(
+        "elevenlabs",
+        ("elevenlabs_api_key_input",),
+        config.elevenlabs.get("api_key"),
+    )
+    if elevenlabs_key:
+        config.elevenlabs["api_key"] = elevenlabs_key
+    _remember_env_runtime_value("elevenlabs", "api_key", elevenlabs_env_values)
+
+
+cenara_apply_env_provider_keys()
 
 
 def _provider_status_html(label: str, configured: bool, help_url: str) -> str:
@@ -485,11 +703,11 @@ def cenara_status_label(status: str) -> str:
     }.get(status, status)
 
 def cenara_provider_readiness(selected_video_source="pexels", selected_tts_server="azure-tts-v1"):
-    llm_provider_id = (config.app.get("llm_provider") or "openai").lower()
-    llm_ok = llm_provider_id == "ollama" or _has_configured_secret(config.app.get(f"{llm_provider_id}_api_key"))
-    pexels_ok = _has_configured_secret(config.app.get("pexels_api_keys"))
-    pixabay_ok = _has_configured_secret(config.app.get("pixabay_api_keys"))
-    coverr_ok = _has_configured_secret(config.app.get("coverr_api_keys"))
+    llm_provider_id = _llm_provider_id_normalized(config.app.get("llm_provider") or "openai")
+    llm_ok = _has_configured_secret(_llm_provider_secret(llm_provider_id))
+    pexels_ok = _has_configured_secret(_provider_secret_list("pexels", config_value=config.app.get("pexels_api_keys")))
+    pixabay_ok = _has_configured_secret(_provider_secret_list("pixabay", config_value=config.app.get("pixabay_api_keys")))
+    coverr_ok = _has_configured_secret(_provider_secret_list("coverr", config_value=config.app.get("coverr_api_keys")))
     source_ok = {"pexels": pexels_ok, "pixabay": pixabay_ok, "coverr": coverr_ok, "local": True}.get(selected_video_source, False)
     tts_server_id = selected_tts_server or config.ui.get("tts_server", "azure-tts-v1")
     tts_ok = tts_server_id == voice.NO_VOICE_NAME or bool(config.ui.get("voice_name"))
@@ -502,7 +720,9 @@ def cenara_provider_readiness(selected_video_source="pexels", selected_tts_serve
     elif tts_server_id == "mimo-tts":
         tts_ok = tts_ok and _has_configured_secret(config.app.get("mimo_api_key"))
     elif tts_server_id == "elevenlabs":
-        tts_ok = tts_ok and _has_configured_secret(config.elevenlabs.get("api_key"))
+        tts_ok = tts_ok and _has_configured_secret(
+            _provider_secret("elevenlabs", ("elevenlabs_api_key_input",), config.elevenlabs.get("api_key"))
+        )
     ffmpeg_binary = cenara_resolve_ffmpeg_binary()
     render_ok = bool(ffmpeg_binary)
     imagemagick_ok = bool(shutil.which("magick") or shutil.which("convert"))
@@ -549,18 +769,20 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         errors.append("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "pexels" and not _has_configured_secret(config.app.get("pexels_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "pixabay" and not _has_configured_secret(config.app.get("pixabay_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-    if payload.video_source == "coverr" and not _has_configured_secret(config.app.get("coverr_api_keys")):
-        errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if readiness and readiness.get("LLM", ("missing", ""))[0] == "missing":
+        errors.append("Configure a chave do provedor LLM selecionado no Railway ou escolha OpenAI/Ollama.")
+    if payload.video_source == "pexels" and (not readiness or readiness.get("Pexels", ("missing", ""))[0] != "configured"):
+        errors.append("Configure PEXELS_API_KEY ou escolha mídia local.")
+    if payload.video_source == "pixabay" and (not readiness or readiness.get("Pixabay", ("missing", ""))[0] != "configured"):
+        errors.append("Configure PIXABAY_API_KEY ou escolha mídia local.")
+    if payload.video_source == "coverr" and (not readiness or readiness.get("Coverr", ("optional", ""))[0] != "configured"):
+        errors.append("Configure COVER_API_KEY/COVERR_API_KEY ou escolha mídia local.")
     if readiness:
         blockers = [f"{label}: {detail}" for label, (status, detail) in readiness.items() if status == "blocked"]
         if blockers:
             errors.append("Geração bloqueada por provedor obrigatório ausente: " + "; ".join(blockers) + ".")
-        if readiness.get("LLM", ("missing", ""))[0] == "missing" and (not payload.video_script or (payload.video_source != "local" and not payload.video_terms)):
-            errors.append("Configure o provedor LLM ou informe roteiro manual e palavras-chave para evitar geração por IA.")
+        if readiness.get("Voz/TTS", ("blocked", ""))[0] == "blocked":
+            errors.append("Configure ELEVENLABS_API_KEY, selecione uma voz válida ou envie um áudio personalizado.")
     if not uploaded_audio and not payload.custom_audio_file and not payload.voice_name:
         errors.append("Configure uma voz TTS ou envie um áudio personalizado.")
     return list(dict.fromkeys(errors))
@@ -649,10 +871,10 @@ def cenara_trigger_real_generation(task_id, payload, status_box=None):
             status_box.write(stage)
         engine_video_paths = engine_result.get("videos") if engine_result else []
         latest = cenara_find_task_mp4(task_id=task_id, engine_video_paths=engine_video_paths, limit=1)
-        if latest and latest[0].is_file() and latest[0].stat().st_size > 0:
+        if latest and latest[0].is_file() and latest[0].stat().st_size > 0 and latest[0].stat().st_mtime >= started_at:
             result.update(success=True, output_path=str(latest[0]), logs=[f"MP4 real encontrado: {latest[0]}"] )
         else:
-            result["error"] = "A geração terminou, mas nenhum MP4 real foi encontrado no diretório da tarefa."
+            result["error"] = "A geração terminou, mas nenhum MP4 real novo e não vazio foi encontrado no diretório da tarefa."
     except Exception as exc:
         logger.exception(f"Cenara geração real falhou task_id={task_id}: {exc}")
         result["error"] = f"Falha no motor de geração real: {exc}"
@@ -663,6 +885,10 @@ def cenara_render_real_preview(mp4_path):
     st.subheader("Preview Real")
     if not mp4_path:
         st.info("Nenhum vídeo real gerado ainda.")
+        return
+    current_task_id = st.session_state.get("cenara_latest_task_id")
+    if current_task_id and not _is_path_inside(mp4_path, _task_dir_for(current_task_id)):
+        st.info("Nenhum MP4 novo desta geração está disponível para preview.")
         return
     stat = mp4_path.stat()
     st.video(str(mp4_path))
@@ -679,10 +905,7 @@ def cenara_render_recent_videos():
     for path in videos:
         stat = path.stat()
         with st.expander(f"{path.name} · {datetime.fromtimestamp(stat.st_mtime):%d/%m/%Y %H:%M}", expanded=False):
-            st.video(str(path))
-            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB")
-            with open(path, "rb") as video_file:
-                st.download_button("Baixar MP4", video_file, file_name=path.name, mime="video/mp4", key=f"download_{path.name}_{int(stat.st_mtime)}")
+            st.caption(f"Tamanho: {stat.st_size / (1024 * 1024):.2f} MB · preview/download aparecem somente para o MP4 novo da geração atual.")
 
 CENARA_PROJECTS_FILE = Path(root_dir) / "storage" / "cenara_projects.json"
 
@@ -792,6 +1015,7 @@ def cenara_render_command_center(params, selected_tts_server):
             output_path = Path(result["output_path"])
             status_box.update(label="finalizado", state="complete")
             st.session_state["cenara_latest_mp4"] = str(output_path)
+            st.session_state["cenara_latest_task_id"] = task_id
             cenara_save_project_record(task_id, payload, output_path, "completed")
             st.success(f"Vídeo real gerado com sucesso. task_id: {task_id}")
             st.caption(f"Saída: {output_path}")
@@ -802,7 +1026,7 @@ def cenara_render_command_center(params, selected_tts_server):
             st.error(result.get("error") or "A geração falhou sem mensagem detalhada.")
     with right:
         st.markdown('<div class="cenara-workspace-card"><div class="cenara-card-kicker">03 · Preview & Output</div><h3>Render real</h3></div>', unsafe_allow_html=True)
-        latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else (cenara_find_latest_mp4(limit=1)[0] if cenara_find_latest_mp4(limit=1) else None)
+        latest_path = Path(st.session_state["cenara_latest_mp4"]) if st.session_state.get("cenara_latest_mp4") else None
         cenara_render_real_preview(latest_path)
     recent_projects = cenara_load_projects()[:6]
     if recent_projects:
@@ -1375,9 +1599,9 @@ if not config.app.get("hide_config", False):
 
             st.write("Fontes de vídeo")
             provider_cards = [
-                ("Pexels", _has_configured_secret(config.app.get("pexels_api_keys", [])), "https://www.pexels.com/api/"),
-                ("Pixabay", _has_configured_secret(config.app.get("pixabay_api_keys", [])), "https://pixabay.com/api/docs/"),
-                ("Coverr", _has_configured_secret(config.app.get("coverr_api_keys", [])), "https://coverr.co/api"),
+                ("Pexels", _has_configured_secret(_provider_secret_list("pexels", config_value=config.app.get("pexels_api_keys", []))), "https://www.pexels.com/api/"),
+                ("Pixabay", _has_configured_secret(_provider_secret_list("pixabay", config_value=config.app.get("pixabay_api_keys", []))), "https://pixabay.com/api/docs/"),
+                ("Coverr", _has_configured_secret(_provider_secret_list("coverr", config_value=config.app.get("coverr_api_keys", []))), "https://coverr.co/api"),
             ]
             render_cenara_provider_status_cards(provider_cards)
 
@@ -1732,11 +1956,11 @@ with st.expander("Controles avançados MoneyPrinterTurbo", expanded=False):
                 # the API key text_input widget).
                 entered_elevenlabs_api_key = st.session_state.get("elevenlabs_api_key_input", "")
                 elevenlabs_api_key_for_loading = (
-                    entered_elevenlabs_api_key or config.elevenlabs.get("api_key", "")
+                    _provider_secret("elevenlabs", ("elevenlabs_api_key_input",), config.elevenlabs.get("api_key"))
                 )
                 if entered_elevenlabs_api_key:
                     config.elevenlabs["api_key"] = entered_elevenlabs_api_key
-                cache_key = f"elevenlabs_voices_{elevenlabs_api_key_for_loading}"
+                cache_key = "elevenlabs_voices_configured" if elevenlabs_api_key_for_loading else "elevenlabs_voices_missing"
                 if cache_key not in st.session_state:
                     st.session_state[cache_key] = voice.get_elevenlabs_voices(
                         elevenlabs_api_key_for_loading
@@ -2343,28 +2567,13 @@ start_button = st.button("Gerar vídeo real", use_container_width=True, type="pr
 if start_button:
     config.save_config()
     task_id = str(uuid4())
-    if not params.video_subject and not params.video_script:
-        st.error("Informe um tema do vídeo ou escreva um roteiro manual antes de gerar.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source not in ["pexels", "pixabay", "coverr", "local"]:
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pexels" and not config.app.get("pexels_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "pixabay" and not config.app.get("pixabay_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
-        scroll_to_bottom()
-        st.stop()
-
-    if params.video_source == "coverr" and not config.app.get("coverr_api_keys", ""):
-        st.error("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    readiness = cenara_provider_readiness(params.video_source, config.ui.get("tts_server", "azure-tts-v1"))
+    if uploaded_audio_file or params.custom_audio_file:
+        readiness["Voz/TTS"] = ("configured", "áudio personalizado")
+    errors = cenara_validate_generation_payload(params, uploaded_audio=uploaded_audio_file, readiness=readiness)
+    if errors:
+        for error in errors:
+            st.error(error)
         scroll_to_bottom()
         st.stop()
 
@@ -2439,6 +2648,7 @@ if start_button:
 
     video_files = [result["output_path"]]
     st.session_state["cenara_latest_mp4"] = result["output_path"]
+    st.session_state["cenara_latest_task_id"] = task_id
     st.success("Vídeo real gerado com sucesso.")
     try:
         player_cols = st.columns(len(video_files) * 2 + 1)
