@@ -44,9 +44,43 @@ st.set_page_config(
 
 streamlit_style = """
 <style>
-h1 {
-    padding-top: 0 !important;
+:root {
+    --cenara-bg: #020817;
+    --cenara-border: rgba(96, 165, 250, 0.22);
+    --cenara-blue: #2563eb;
+    --cenara-purple: #9333ea;
+    --cenara-text: #f8fafc;
+    --cenara-muted: #94a3b8;
 }
+.stApp {
+    background:
+        radial-gradient(circle at top left, rgba(37, 99, 235, 0.24), transparent 32rem),
+        radial-gradient(circle at top right, rgba(147, 51, 234, 0.18), transparent 30rem),
+        var(--cenara-bg);
+    color: var(--cenara-text);
+}
+h1 { padding-top: 0 !important; }
+.cenara-hero, .cenara-flow-card, .cenara-provider-card {
+    border: 1px solid var(--cenara-border);
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.92), rgba(2, 8, 23, 0.72));
+    border-radius: 22px;
+    box-shadow: 0 24px 80px rgba(2, 8, 23, 0.28);
+}
+.cenara-hero { padding: 1.45rem 1.6rem; margin-bottom: 1rem; }
+.cenara-eyebrow { color: #60a5fa; font-size: .78rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+.cenara-title { font-size: 2.25rem; line-height: 1.05; font-weight: 900; margin: .35rem 0; color: #f8fafc; }
+.cenara-subtitle { color: #cbd5e1; font-size: 1.02rem; max-width: 860px; margin-bottom: .8rem; }
+.cenara-badges { display: flex; flex-wrap: wrap; gap: .5rem; }
+.cenara-badge, .cenara-status-ok, .cenara-status-missing { border-radius: 999px; padding: .35rem .7rem; font-size: .78rem; font-weight: 700; }
+.cenara-badge { background: rgba(37, 99, 235, .16); border: 1px solid rgba(96, 165, 250, .25); color: #dbeafe; }
+.cenara-section-title { margin: 1.25rem 0 .65rem; font-size: 1.05rem; font-weight: 850; color: #e2e8f0; }
+.cenara-flow-card, .cenara-provider-card { padding: 1rem; min-height: 124px; }
+.cenara-flow-icon { width: 2.25rem; height: 2.25rem; border-radius: .85rem; display: grid; place-items: center; background: linear-gradient(135deg, var(--cenara-blue), var(--cenara-purple)); margin-bottom: .55rem; }
+.cenara-flow-title { font-weight: 850; margin-bottom: .25rem; color: #f8fafc; }
+.cenara-flow-copy, .cenara-provider-copy { color: var(--cenara-muted); font-size: .9rem; }
+.cenara-status-ok { color: #bbf7d0; background: rgba(22, 163, 74, .14); border: 1px solid rgba(74, 222, 128, .24); }
+.cenara-status-missing { color: #fed7aa; background: rgba(249, 115, 22, .13); border: 1px solid rgba(251, 146, 60, .24); }
+.cenara-footer-note { color: #94a3b8; font-size: .82rem; text-align: center; margin: 1rem 0 .35rem; }
 </style>
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
@@ -178,8 +212,21 @@ locales = utils.load_locales(i18n_dir)
 title_col, lang_col = st.columns([3, 1])
 
 with title_col:
-    st.title("Cenara")
-    st.caption("Powered by GXEON · Based on MoneyPrinterTurbo MIT.")
+    st.markdown(
+        """
+        <div class="cenara-hero">
+          <div class="cenara-eyebrow">Cenara Private MVP</div>
+          <div class="cenara-title">Crie vídeos com IA com clareza, controle e segurança.</div>
+          <div class="cenara-subtitle">Painel privado para operadores brasileiros criarem roteiros, escolherem fontes visuais, configurarem voz, legendas e exportarem vídeos sem expor chaves salvas.</div>
+          <div class="cenara-badges">
+            <span class="cenara-badge">Powered by GXEON</span>
+            <span class="cenara-badge">Based on MoneyPrinterTurbo MIT</span>
+            <span class="cenara-badge">Manual-first · privado · sem billing</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 with lang_col:
     display_languages = []
@@ -214,6 +261,62 @@ support_locales = [
     "tr-TR",
 ]
 
+
+
+def _has_configured_secret(value) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(str(item).strip() for item in value)
+    return bool(str(value or "").strip())
+
+
+def _provider_status_html(label: str, configured: bool, help_url: str) -> str:
+    status_class = "cenara-status-ok" if configured else "cenara-status-missing"
+    status_label = "Configurado" if configured else "Não configurado"
+    return f"""
+    <div class="cenara-provider-card">
+      <div class="cenara-flow-title">{label}</div>
+      <span class="{status_class}">{status_label}</span>
+      <div class="cenara-provider-copy" style="margin-top:.75rem">Cole uma nova chave somente quando quiser atualizar. Campo vazio preserva a configuração existente.</div>
+      <div class="cenara-provider-copy">Obter chave: {help_url}</div>
+    </div>
+    """
+
+
+def render_cenara_product_intro():
+    st.markdown('<div class="cenara-section-title">Como a Cenara funciona</div>', unsafe_allow_html=True)
+    steps = st.columns(5)
+    flow_cards = [
+        ("🎯", "1. Tema", "Defina nicho, promessa e público do vídeo."),
+        ("🧠", "2. Roteiro IA", "Gere ou cole o roteiro com palavras-chave."),
+        ("🎬", "3. Fonte", "Escolha Pexels, Pixabay, Coverr ou arquivos locais."),
+        ("🎙️", "4. Voz", "Configure TTS e legendas sem revelar chaves."),
+        ("✨", "5. Gerar", "Renderize, revise e exporte manualmente."),
+    ]
+    for col, (icon, title, copy) in zip(steps, flow_cards):
+        with col:
+            st.markdown(
+                f'<div class="cenara-flow-card"><div class="cenara-flow-icon">{icon}</div><div class="cenara-flow-title">{title}</div><div class="cenara-flow-copy">{copy}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="cenara-section-title">Módulos do fluxo</div>', unsafe_allow_html=True)
+    modules = st.columns(5)
+    module_cards = [
+        ("📝", "Roteiro IA", "Transforme briefing em narrativa curta."),
+        ("🗂️", "Fonte de Vídeo", "Use bancos configurados pelo operador."),
+        ("🔊", "Voz IA", "Selecione vozes e teste manualmente."),
+        ("💬", "Legendas", "Ajuste estilo, fonte e posição."),
+        ("🚀", "Gerar Vídeo", "Crie arquivos para revisão e exportação."),
+    ]
+    for col, (icon, title, copy) in zip(modules, module_cards):
+        with col:
+            st.markdown(
+                f'<div class="cenara-flow-card"><div class="cenara-flow-icon">{icon}</div><div class="cenara-flow-title">{title}</div><div class="cenara-flow-copy">{copy}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+render_cenara_product_intro()
 
 def get_all_fonts():
     fonts = []
@@ -345,7 +448,7 @@ def get_groq_model_ids(api_key: str, base_url: str) -> list[str]:
 
 # 创建基础设置折叠框
 if not config.app.get("hide_config", False):
-    with st.expander(tr("Basic Settings"), expanded=False):
+    with st.expander("Configuração de Provedores", expanded=False):
         config_panels = st.columns(3)
         left_config_panel = config_panels[0]
         middle_config_panel = config_panels[1]
@@ -698,7 +801,7 @@ if not config.app.get("hide_config", False):
                 st.info(tips)
 
             st_llm_api_key = st.text_input(
-                tr("API Key"), value=llm_api_key, type="password"
+                tr("API Key"), value="", type="password", placeholder="Cole uma nova chave para atualizar"
             )
             st_llm_base_url = st.text_input(tr("Base Url"), value=llm_base_url)
             st_llm_model_name = ""
@@ -755,9 +858,10 @@ if not config.app.get("hide_config", False):
                 config.app[f"{llm_provider}_model_name"] = st_llm_model_name
             if llm_provider == "ernie":
                 st_llm_secret_key = st.text_input(
-                    tr("Secret Key"), value=llm_secret_key, type="password"
+                    tr("Secret Key"), value="", type="password", placeholder="Cole uma nova secret key para atualizar"
                 )
-                config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
+                if st_llm_secret_key:
+                    config.app[f"{llm_provider}_secret_key"] = st_llm_secret_key
 
             if llm_provider == "cloudflare":
                 st_llm_account_id = st.text_input(
@@ -781,23 +885,29 @@ if not config.app.get("hide_config", False):
                 if value:
                     config.app[cfg_key] = value.split(",")
 
-            st.write(tr("Video Source Settings"))
+            st.write("Fontes de vídeo")
+            provider_cols = st.columns(3)
+            provider_cards = [
+                ("Pexels", _has_configured_secret(config.app.get("pexels_api_keys", [])), "https://www.pexels.com/api/"),
+                ("Pixabay", _has_configured_secret(config.app.get("pixabay_api_keys", [])), "https://pixabay.com/api/docs/"),
+                ("Coverr", _has_configured_secret(config.app.get("coverr_api_keys", [])), "https://coverr.co/api"),
+            ]
+            for provider_col, (provider_label, configured, help_url) in zip(provider_cols, provider_cards):
+                with provider_col:
+                    st.markdown(_provider_status_html(provider_label, configured, help_url), unsafe_allow_html=True)
 
-            pexels_api_key = get_keys_from_config("pexels_api_keys")
             pexels_api_key = st.text_input(
-                tr("Pexels API Key"), value=pexels_api_key, type="password"
+                tr("Pexels API Key"), value="", type="password", placeholder="Cole uma nova chave Pexels"
             )
             save_keys_to_config("pexels_api_keys", pexels_api_key)
 
-            pixabay_api_key = get_keys_from_config("pixabay_api_keys")
             pixabay_api_key = st.text_input(
-                tr("Pixabay API Key"), value=pixabay_api_key, type="password"
+                tr("Pixabay API Key"), value="", type="password", placeholder="Cole uma nova chave Pixabay"
             )
             save_keys_to_config("pixabay_api_keys", pixabay_api_key)
 
-            coverr_api_key = get_keys_from_config("coverr_api_keys")
             coverr_api_key = st.text_input(
-                tr("Coverr API Key"), value=coverr_api_key, type="password"
+                tr("Coverr API Key"), value="", type="password", placeholder="Cole uma nova chave Coverr"
             )
             save_keys_to_config("coverr_api_keys", coverr_api_key)
 
@@ -1273,12 +1383,14 @@ with middle_panel:
             )
             azure_speech_key = st.text_input(
                 tr("Speech Key"),
-                value=saved_azure_speech_key,
+                value="",
                 type="password",
+                placeholder="Cole uma nova chave Azure Speech",
                 key="azure_speech_key_input",
             )
             config.azure["speech_region"] = azure_speech_region
-            config.azure["speech_key"] = azure_speech_key
+            if azure_speech_key:
+                config.azure["speech_key"] = azure_speech_key
 
         # 当选择硅基流动时，显示API key输入框和说明信息
         if selected_tts_server == "siliconflow" or (
@@ -1288,8 +1400,9 @@ with middle_panel:
 
             siliconflow_api_key = st.text_input(
                 tr("SiliconFlow API Key"),
-                value=saved_siliconflow_api_key,
+                value="",
                 type="password",
+                placeholder="Cole uma nova chave SiliconFlow",
                 key="siliconflow_api_key_input",
             )
 
@@ -1304,7 +1417,8 @@ with middle_panel:
                 + tr("Volume: Uses Speech Volume setting, default 1.0 maps to gain 0")
             )
 
-            config.siliconflow["api_key"] = siliconflow_api_key
+            if siliconflow_api_key:
+                config.siliconflow["api_key"] = siliconflow_api_key
 
         # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
         # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
@@ -1315,8 +1429,9 @@ with middle_panel:
 
             mimo_api_key = st.text_input(
                 tr("MiMo API Key"),
-                value=saved_mimo_api_key,
+                value="",
                 type="password",
+                placeholder="Cole uma nova chave MiMo",
                 key="mimo_tts_api_key_input",
             )
 
@@ -1330,7 +1445,8 @@ with middle_panel:
                 + tr("Speed and volume are currently handled by the provider defaults")
             )
 
-            config.app["mimo_api_key"] = mimo_api_key
+            if mimo_api_key:
+                config.app["mimo_api_key"] = mimo_api_key
 
         # ElevenLabs API key section
         if selected_tts_server == "elevenlabs" or (
