@@ -46,41 +46,91 @@ streamlit_style = """
 <style>
 :root {
     --cenara-bg: #020817;
-    --cenara-border: rgba(96, 165, 250, 0.22);
+    --cenara-panel: rgba(15, 23, 42, 0.74);
+    --cenara-panel-strong: rgba(15, 23, 42, 0.92);
+    --cenara-border: rgba(148, 163, 184, 0.16);
     --cenara-blue: #2563eb;
-    --cenara-purple: #9333ea;
+    --cenara-purple: #7c3aed;
+    --cenara-cyan: #06b6d4;
+    --cenara-green: #22c55e;
     --cenara-text: #f8fafc;
     --cenara-muted: #94a3b8;
 }
 .stApp {
     background:
-        radial-gradient(circle at top left, rgba(37, 99, 235, 0.24), transparent 32rem),
-        radial-gradient(circle at top right, rgba(147, 51, 234, 0.18), transparent 30rem),
-        var(--cenara-bg);
+        radial-gradient(circle at 8% 4%, rgba(37, 99, 235, 0.30), transparent 25rem),
+        radial-gradient(circle at 86% 8%, rgba(124, 58, 237, 0.24), transparent 28rem),
+        linear-gradient(135deg, #020617 0%, #061126 48%, #020817 100%);
     color: var(--cenara-text);
 }
-h1 { padding-top: 0 !important; }
-.cenara-hero, .cenara-flow-card, .cenara-provider-card {
-    border: 1px solid var(--cenara-border);
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.92), rgba(2, 8, 23, 0.72));
-    border-radius: 22px;
-    box-shadow: 0 24px 80px rgba(2, 8, 23, 0.28);
+.block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1500px; }
+[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] { display: none; }
+h1, h2, h3 { color: var(--cenara-text) !important; }
+.stButton > button, .stFormSubmitButton > button {
+    border-radius: 14px !important;
+    border: 1px solid rgba(96, 165, 250, .30) !important;
+    background: linear-gradient(135deg, #2563eb, #7c3aed) !important;
+    color: #fff !important;
+    box-shadow: 0 16px 42px rgba(37, 99, 235, .22) !important;
+    font-weight: 800 !important;
 }
-.cenara-hero { padding: 1.45rem 1.6rem; margin-bottom: 1rem; }
-.cenara-eyebrow { color: #60a5fa; font-size: .78rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
-.cenara-title { font-size: 2.25rem; line-height: 1.05; font-weight: 900; margin: .35rem 0; color: #f8fafc; }
-.cenara-subtitle { color: #cbd5e1; font-size: 1.02rem; max-width: 860px; margin-bottom: .8rem; }
-.cenara-badges { display: flex; flex-wrap: wrap; gap: .5rem; }
-.cenara-badge, .cenara-status-ok, .cenara-status-missing { border-radius: 999px; padding: .35rem .7rem; font-size: .78rem; font-weight: 700; }
-.cenara-badge { background: rgba(37, 99, 235, .16); border: 1px solid rgba(96, 165, 250, .25); color: #dbeafe; }
-.cenara-section-title { margin: 1.25rem 0 .65rem; font-size: 1.05rem; font-weight: 850; color: #e2e8f0; }
-.cenara-flow-card, .cenara-provider-card { padding: 1rem; min-height: 124px; }
-.cenara-flow-icon { width: 2.25rem; height: 2.25rem; border-radius: .85rem; display: grid; place-items: center; background: linear-gradient(135deg, var(--cenara-blue), var(--cenara-purple)); margin-bottom: .55rem; }
-.cenara-flow-title { font-weight: 850; margin-bottom: .25rem; color: #f8fafc; }
-.cenara-flow-copy, .cenara-provider-copy { color: var(--cenara-muted); font-size: .9rem; }
-.cenara-status-ok { color: #bbf7d0; background: rgba(22, 163, 74, .14); border: 1px solid rgba(74, 222, 128, .24); }
-.cenara-status-missing { color: #fed7aa; background: rgba(249, 115, 22, .13); border: 1px solid rgba(251, 146, 60, .24); }
-.cenara-footer-note { color: #94a3b8; font-size: .82rem; text-align: center; margin: 1rem 0 .35rem; }
+.stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"] {
+    border-radius: 14px !important;
+    border-color: rgba(148, 163, 184, .18) !important;
+    background-color: rgba(2, 8, 23, .54) !important;
+    color: #f8fafc !important;
+}
+.cenara-dashboard { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 1.6rem; align-items: start; }
+.cenara-sidebar {
+    position: sticky; top: 1rem; min-height: calc(100vh - 2rem); padding: 1.35rem;
+    border: 1px solid rgba(37, 99, 235, .24); border-radius: 26px;
+    background: linear-gradient(180deg, rgba(7, 18, 44, .96), rgba(3, 10, 27, .90));
+    box-shadow: 0 26px 80px rgba(2, 8, 23, .46), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.cenara-logo { display:flex; align-items:center; gap:.75rem; font-size:1.65rem; font-weight:950; margin-bottom:1.5rem; }
+.cenara-logo-mark { width:42px; height:42px; border-radius:16px; display:grid; place-items:center; background:conic-gradient(from 210deg, #06b6d4, #2563eb, #7c3aed, #06b6d4); box-shadow:0 0 30px rgba(37,99,235,.45); }
+.cenara-menu { display:grid; gap:.35rem; }
+.cenara-menu-item { display:flex; gap:.75rem; align-items:center; padding:.75rem .85rem; color:#cbd5e1; border-radius:13px; font-weight:700; }
+.cenara-menu-item.active { color:#fff; background:linear-gradient(135deg, rgba(37,99,235,.78), rgba(37,99,235,.25)); border:1px solid rgba(96,165,250,.28); }
+.cenara-plan-card, .cenara-account-card { margin-top:1rem; padding:1rem; border-radius:18px; border:1px solid var(--cenara-border); background:rgba(15,23,42,.62); }
+.cenara-main { min-width:0; }
+.cenara-topbar { display:flex; justify-content:space-between; gap:1rem; align-items:center; margin:.35rem 0 1rem; }
+.cenara-welcome { font-size:1.55rem; font-weight:950; }
+.cenara-subtitle { color:#cbd5e1; margin-top:.2rem; }
+.cenara-actions { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.cenara-search, .cenara-pill, .cenara-owner { border:1px solid var(--cenara-border); background:rgba(2,8,23,.56); border-radius:14px; padding:.75rem .95rem; color:#cbd5e1; }
+.cenara-owner { display:flex; gap:.65rem; align-items:center; color:#fff; }
+.cenara-grid { display:grid; grid-template-columns: minmax(0, 1.55fr) minmax(360px, .95fr); gap:1.25rem; }
+.cenara-card, .cenara-flow-card, .cenara-provider-card {
+    border: 1px solid var(--cenara-border); background: linear-gradient(145deg, rgba(15, 23, 42, 0.76), rgba(2, 8, 23, 0.58));
+    border-radius: 22px; box-shadow: 0 22px 70px rgba(2, 8, 23, 0.34), inset 0 1px 0 rgba(255,255,255,.035);
+}
+.cenara-card { padding:1.25rem; }
+.cenara-card-title { font-weight:900; font-size:1.05rem; color:#f8fafc; }
+.cenara-card-copy, .cenara-flow-copy, .cenara-provider-copy { color:var(--cenara-muted); font-size:.88rem; }
+.cenara-project-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:.75rem; margin-top:1rem; }
+.cenara-field { border:1px solid rgba(148,163,184,.14); border-radius:15px; padding:.85rem; background:rgba(2,8,23,.42); }
+.cenara-field small { color:#94a3b8; display:block; margin-bottom:.2rem; } .cenara-field strong { color:#f8fafc; }
+.cenara-cta { margin-top:1rem; text-align:right; } .cenara-cta span { display:inline-block; padding:.9rem 2.4rem; border-radius:14px; color:#fff; font-weight:900; background:linear-gradient(135deg,#2563eb,#7c3aed,#a855f7); box-shadow:0 18px 45px rgba(124,58,237,.32); }
+.cenara-preview-art { height:235px; margin-top:.85rem; border-radius:16px; position:relative; overflow:hidden; background:linear-gradient(115deg, rgba(15,23,42,.9), rgba(37,99,235,.20)), radial-gradient(circle at 78% 22%, rgba(56,189,248,.35), transparent 9rem), linear-gradient(135deg,#111827,#020617); }
+.cenara-preview-art:before { content:'TRANSFORME\\A SUA IDEIA\\A EM VÍDEO'; white-space:pre; position:absolute; left:1.5rem; top:2.2rem; font-size:1.65rem; line-height:1.05; font-weight:950; color:#fff; }
+.cenara-play { position:absolute; inset:0; margin:auto; width:64px; height:64px; border-radius:999px; display:grid; place-items:center; background:linear-gradient(135deg,#2563eb,#7c3aed); box-shadow:0 0 38px rgba(37,99,235,.55); font-size:1.5rem; }
+.cenara-progress { position:absolute; left:1rem; right:1rem; bottom:1rem; height:6px; border-radius:999px; background:rgba(148,163,184,.28); } .cenara-progress span { display:block; width:58%; height:100%; border-radius:inherit; background:linear-gradient(90deg,#2563eb,#a855f7); }
+.cenara-tag { position:absolute; right:1rem; top:1rem; padding:.3rem .55rem; border-radius:8px; background:rgba(15,23,42,.75); color:#e2e8f0; font-weight:800; font-size:.78rem; }
+.cenara-metrics, .cenara-modules { display:grid; gap:.75rem; margin-top:.75rem; } .cenara-metrics { grid-template-columns:repeat(4,1fr); } .cenara-modules { grid-template-columns:repeat(3,1fr); }
+.cenara-metric-value { font-size:1.55rem; font-weight:950; color:#fff; } .cenara-positive { color:#4ade80; font-size:.82rem; }
+.cenara-flow-card, .cenara-provider-card { padding:1rem; min-height:124px; }
+.cenara-flow-icon { width:2.35rem; height:2.35rem; border-radius:.9rem; display:grid; place-items:center; background:linear-gradient(135deg,var(--cenara-blue),var(--cenara-purple)); margin-bottom:.55rem; }
+.cenara-flow-title { font-weight:850; margin-bottom:.25rem; color:#f8fafc; }
+.cenara-status-ok, .cenara-status-missing { border-radius:999px; padding:.35rem .7rem; font-size:.78rem; font-weight:800; display:inline-block; }
+.cenara-status-ok { color:#bbf7d0; background:rgba(22,163,74,.14); border:1px solid rgba(74,222,128,.24); }
+.cenara-status-missing { color:#fed7aa; background:rgba(249,115,22,.13); border:1px solid rgba(251,146,60,.24); }
+.cenara-section-title { margin:1.25rem 0 .65rem; font-size:1.05rem; font-weight:900; color:#e2e8f0; }
+.cenara-footer-cta { margin-top:1rem; display:flex; justify-content:space-between; align-items:center; gap:1rem; padding:1.25rem 1.6rem; border-radius:22px; border:1px solid rgba(96,165,250,.25); background:linear-gradient(105deg, rgba(37,99,235,.36), rgba(124,58,237,.30)), radial-gradient(circle at 72% 50%, rgba(56,189,248,.25), transparent 14rem); }
+.cenara-footer-title { font-size:1.25rem; font-weight:950; color:#fff; } .cenara-footer-button { padding:.85rem 1.8rem; border-radius:13px; background:linear-gradient(135deg,#2563eb,#7c3aed); color:#fff; font-weight:900; opacity:.78; }
+.cenara-footer-note { color:#94a3b8; font-size:.82rem; text-align:center; margin:1rem 0 .35rem; }
+@media (max-width: 1100px) { .cenara-dashboard { grid-template-columns:1fr; } .cenara-sidebar { position:relative; min-height:auto; } .cenara-grid, .cenara-metrics, .cenara-modules { grid-template-columns:1fr; } .cenara-project-grid { grid-template-columns:1fr; } }
 </style>
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
@@ -121,6 +171,74 @@ system_locale = utils.get_system_locale()
 DEFAULT_CHATTERBOX_BASE_URL = "http://127.0.0.1:4123/v1"
 DEFAULT_CHATTERBOX_MODEL = "chatterbox"
 DEFAULT_CHATTERBOX_VOICES = ["default-Female"]
+
+
+def render_cenara_sidebar():
+    menu_items = [
+        ("▦", "Dashboard", "active"), ("▣", "Projetos", ""), ("▶", "Criar Vídeo", ""),
+        ("▤", "Roteiro IA", ""), ("◖", "Voz IA", ""), ("▬", "Legendas", ""),
+        ("▧", "Banco de Cenas", ""), ("✿", "Brand Kit", ""), ("⇪", "Exportação", ""),
+        ("⌁", "Analytics", ""), ("⚙", "Configurações", ""),
+    ]
+    items_html = "".join(f'<div class="cenara-menu-item {active}"><span>{icon}</span><span>{label}</span></div>' for icon, label, active in menu_items)
+    return f"""
+    <aside class="cenara-sidebar">
+      <div class="cenara-logo"><span class="cenara-logo-mark">C</span><span>Cenara</span></div>
+      <div class="cenara-menu">{items_html}</div>
+      <div class="cenara-plan-card"><div class="cenara-card-title">Plano Profissional</div><div class="cenara-card-copy" style="margin:.45rem 0">Créditos restantes</div><div style="font-weight:900;color:#fff">8.450 <span style="color:#64748b">/ 10.000</span></div><div class="cenara-progress" style="position:relative;left:auto;right:auto;bottom:auto;margin-top:.65rem"><span style="width:84%"></span></div></div>
+      <div class="cenara-account-card"><div style="font-weight:900;color:#fff">Gustavo Martins</div><div class="cenara-card-copy">gestor@agenciamax.com</div></div>
+    </aside>
+    """
+
+
+def render_cenara_topbar():
+    return """
+    <div class="cenara-topbar"><div><div class="cenara-welcome">Bem-vindo de volta, Gustavo! 👋</div><div class="cenara-subtitle">Crie vídeos com IA para anúncios, vendas e conteúdo que converte.</div></div><div class="cenara-actions"><div class="cenara-search">⌕ Buscar projetos, vídeos ou recursos...</div><div class="cenara-pill">Novidades •</div><div class="cenara-pill">🔔 3</div><div class="cenara-owner"><span class="cenara-logo-mark" style="width:34px;height:34px;border-radius:12px">C</span><span><strong>Agência Max</strong><br><small>Proprietário</small></span></div></div></div>
+    """
+
+
+def render_cenara_project_creator():
+    fields = [("◎", "Nicho", "Saúde e Bem-estar"), ("◇", "Promessa", "Emagreça com saúde e sem efeito sanfona"), ("♙", "Público", "Mulheres 25–45 anos"), ("▯", "Formato", "Vídeo Vertical (9:16)"), ("◷", "Duração", "30 segundos"), ("↗", "CTA", "Comece agora seu tratamento")]
+    fields_html = "".join(f'<div class="cenara-field"><small>{icon} &nbsp; {label}</small><strong>{value}</strong></div>' for icon, label, value in fields)
+    return f"""<div class="cenara-card"><div style="display:flex;justify-content:space-between;gap:1rem;align-items:center"><div><div class="cenara-card-title">Novo projeto de vídeo</div><div class="cenara-card-copy">Descreva seu projeto e a Cenara cuida do resto.</div></div><div class="cenara-card-copy">↻ Limpar campos</div></div><div class="cenara-project-grid">{fields_html}</div><div class="cenara-cta"><span>Gerar Vídeo com IA ✨</span></div></div>"""
+
+
+def render_cenara_preview_card():
+    return """<div class="cenara-card"><div style="display:flex;justify-content:space-between"><div class="cenara-card-title">Preview do vídeo</div><span class="cenara-tag" style="position:static">30s</span></div><div class="cenara-preview-art"><div class="cenara-tag">30s</div><div class="cenara-play">▶</div><div class="cenara-progress"><span></span></div></div><div class="cenara-field" style="margin-top:.75rem;text-align:center">✎ &nbsp;<strong>Editar no estúdio</strong></div></div><div class="cenara-card" style="margin-top:.75rem"><div class="cenara-card-title">Dicas para melhores resultados</div><div class="cenara-card-copy" style="line-height:1.9;margin-top:.5rem">● Seja claro na promessa do seu produto<br>● Use CTAs diretos e objetivos<br>● Vídeos curtos têm maior retenção<br>● Teste variações de criativos</div></div>"""
+
+
+def render_cenara_metrics():
+    metrics = [("✣", "Vídeos criados", "128", "+28% este mês"), ("⚑", "Criativos ativos", "56", "+18% este mês"), ("▰", "Campanhas", "23", "+15% este mês"), ("⌁", "Conversões estimadas", "3.452", "+32% este mês")]
+    cards = "".join(f'<div class="cenara-flow-card"><div class="cenara-flow-icon">{icon}</div><div class="cenara-card-copy">{label}</div><div class="cenara-metric-value">{value}</div><div class="cenara-positive">{delta}</div></div>' for icon, label, value, delta in metrics)
+    return f'<div class="cenara-metrics">{cards}</div>'
+
+
+def render_cenara_modules_grid():
+    modules = [("▶", "Criar Vídeo", "Gere vídeos profissionais com IA em minutos."), ("▤", "Roteiro IA", "Scripts persuasivos gerados por IA para vender mais."), ("◖", "Voz IA", "Vozes realistas que conectam e geram engajamento."), ("▧", "Banco de Cenas", "Milhares de cenas prontas para seus vídeos."), ("Aa", "Brand Kit", "Cores, fontes e logos aplicados automaticamente."), ("⌁", "Analytics", "Acompanhe resultados e otimize campanhas.")]
+    cards = "".join(f'<div class="cenara-flow-card"><div class="cenara-flow-icon">{icon}</div><div class="cenara-flow-title">{title}</div><div class="cenara-flow-copy">{copy}</div></div>' for icon, title, copy in modules)
+    return f'<div class="cenara-section-title">Módulos</div><div class="cenara-modules">{cards}</div>'
+
+
+def render_cenara_footer_cta():
+    return """<div class="cenara-footer-cta"><div><div class="cenara-footer-title">Vídeos com IA para anúncios, vendas e conteúdo de alta conversão.</div><div class="cenara-card-copy">Mais estratégia. Menos esforço. Mais resultado.</div></div><div class="cenara-footer-button">Ver planos</div></div><div class="cenara-footer-note">© 2025 Cenara. Powered by <strong>GXEON</strong> · Based on MoneyPrinterTurbo MIT</div>"""
+
+
+def render_cenara_premium_shell():
+    st.markdown('<div class="cenara-dashboard">' + render_cenara_sidebar() + '<main class="cenara-main">' + render_cenara_topbar(), unsafe_allow_html=True)
+    left, right = st.columns([1.55, .95], gap="large")
+    with left:
+        st.markdown(render_cenara_project_creator(), unsafe_allow_html=True)
+        st.markdown(render_cenara_metrics(), unsafe_allow_html=True)
+    with right:
+        st.markdown(render_cenara_preview_card(), unsafe_allow_html=True)
+    st.markdown(render_cenara_modules_grid() + render_cenara_footer_cta() + '</main></div>', unsafe_allow_html=True)
+
+
+def render_cenara_provider_status_cards(provider_cards):
+    provider_cols = st.columns(len(provider_cards))
+    for provider_col, (provider_label, configured, help_url) in zip(provider_cols, provider_cards):
+        with provider_col:
+            st.markdown(_provider_status_html(provider_label, configured, help_url), unsafe_allow_html=True)
 
 
 def _parse_chatterbox_voices(voices):
@@ -208,45 +326,27 @@ if "local_video_materials" not in st.session_state:
 # 加载语言文件
 locales = utils.load_locales(i18n_dir)
 
-# 创建一个顶部栏，包含标题和语言选择
-title_col, lang_col = st.columns([3, 1])
+# 创建 Cenara premium shell após o gate privado e antes dos controles operacionais.
+render_cenara_premium_shell()
 
-with title_col:
-    st.markdown(
-        """
-        <div class="cenara-hero">
-          <div class="cenara-eyebrow">Cenara Private MVP</div>
-          <div class="cenara-title">Crie vídeos com IA com clareza, controle e segurança.</div>
-          <div class="cenara-subtitle">Painel privado para operadores brasileiros criarem roteiros, escolherem fontes visuais, configurarem voz, legendas e exportarem vídeos sem expor chaves salvas.</div>
-          <div class="cenara-badges">
-            <span class="cenara-badge">Powered by GXEON</span>
-            <span class="cenara-badge">Based on MoneyPrinterTurbo MIT</span>
-            <span class="cenara-badge">Manual-first · privado · sem billing</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# Language selector is intentionally kept as a compact operational control below the premium shell.
+display_languages = []
+selected_index = 0
+for i, code in enumerate(locales.keys()):
+    display_languages.append(f"{code} - {locales[code].get('Language')}")
+    if code == st.session_state.get("ui_language", ""):
+        selected_index = i
 
-with lang_col:
-    display_languages = []
-    selected_index = 0
-    for i, code in enumerate(locales.keys()):
-        display_languages.append(f"{code} - {locales[code].get('Language')}")
-        if code == st.session_state.get("ui_language", ""):
-            selected_index = i
-
-    selected_language = st.selectbox(
-        "Language / 语言",
-        options=display_languages,
-        index=selected_index,
-        key="top_language_selector",
-        label_visibility="collapsed",
-    )
-    if selected_language:
-        code = selected_language.split(" - ")[0].strip()
-        st.session_state["ui_language"] = code
-        config.ui["language"] = code
+selected_language = st.selectbox(
+    "Language / 语言",
+    options=display_languages,
+    index=selected_index,
+    key="top_language_selector",
+)
+if selected_language:
+    code = selected_language.split(" - ")[0].strip()
+    st.session_state["ui_language"] = code
+    config.ui["language"] = code
 
 support_locales = [
     "zh-CN",
@@ -316,8 +416,6 @@ def render_cenara_product_intro():
             )
 
 
-render_cenara_product_intro()
-
 def get_all_fonts():
     fonts = []
     for root, dirs, files in os.walk(font_dir):
@@ -359,20 +457,8 @@ def open_task_folder(task_id):
 
 
 def scroll_to_bottom():
-    js = """
-    <script>
-        console.log("scroll_to_bottom");
-        function scroll(dummy_var_to_force_repeat_execution){
-            var sections = parent.document.querySelectorAll('section.main');
-            console.log(sections);
-            for(let index = 0; index<sections.length; index++) {
-                sections[index].scrollTop = sections[index].scrollHeight;
-            }
-        }
-        scroll(1);
-    </script>
-    """
-    st.components.v1.html(js, height=0, width=0)
+    # Premium rebuild avoids custom JavaScript/iframes; Streamlit handles viewport updates.
+    return None
 
 
 def init_log():
@@ -890,15 +976,12 @@ if not config.app.get("hide_config", False):
                     config.app[cfg_key] = value.split(",")
 
             st.write("Fontes de vídeo")
-            provider_cols = st.columns(3)
             provider_cards = [
                 ("Pexels", _has_configured_secret(config.app.get("pexels_api_keys", [])), "https://www.pexels.com/api/"),
                 ("Pixabay", _has_configured_secret(config.app.get("pixabay_api_keys", [])), "https://pixabay.com/api/docs/"),
                 ("Coverr", _has_configured_secret(config.app.get("coverr_api_keys", [])), "https://coverr.co/api"),
             ]
-            for provider_col, (provider_label, configured, help_url) in zip(provider_cols, provider_cards):
-                with provider_col:
-                    st.markdown(_provider_status_html(provider_label, configured, help_url), unsafe_allow_html=True)
+            render_cenara_provider_status_cards(provider_cards)
 
             with st.form("cenara_provider_keys_update_form", clear_on_submit=True):
                 pexels_api_key = st.text_input(
