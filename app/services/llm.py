@@ -11,6 +11,7 @@ from openai.types.chat import ChatCompletion
 from app.config import config
 
 _max_retries = 5
+LAST_PROVIDER_ERROR = ""
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 _DEPRECATED_GEMINI_MODELS = {"gemini-pro", "gemini-1.0-pro"}
 MIN_SCRIPT_PARAGRAPH_NUMBER = 1
@@ -688,6 +689,8 @@ def generate_script(
         video_script_prompt=video_script_prompt,
         custom_system_prompt=custom_system_prompt,
     )
+    global LAST_PROVIDER_ERROR
+    LAST_PROVIDER_ERROR = ""
     final_script = ""
     logger.info(
         "generating video script: "
@@ -730,6 +733,7 @@ def generate_script(
             if final_script:
                 break
         except Exception as e:
+            LAST_PROVIDER_ERROR = str(e)
             logger.error(f"failed to generate script: {e}")
 
         if i < _max_retries:
