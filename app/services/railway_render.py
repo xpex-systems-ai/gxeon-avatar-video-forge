@@ -86,7 +86,20 @@ def ffprobe_validate_mp4(path: str | os.PathLike[str], min_bytes: int = MIN_FINA
         return result
 
 
+def normalize_survival_aspect(aspect: Any) -> str:
+    raw = getattr(aspect, "value", aspect)
+    text = str(raw or "9:16").strip().lower()
+    if text in {"portrait", "videoaspect.portrait", "9:16", "916"}:
+        return "9:16"
+    if text in {"landscape", "videoaspect.landscape", "16:9", "169"}:
+        return "16:9"
+    if text in {"square", "videoaspect.square", "1:1", "11"}:
+        return "1:1"
+    return text
+
+
 def _scale_filter(aspect: str, width: int, height: int) -> str:
+    aspect = normalize_survival_aspect(aspect)
     if aspect == "9:16":
         return f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
     return f"scale='min({width},iw)':-2,setsar=1"
@@ -112,12 +125,12 @@ def render_survival_mp4(task_id, source_video_path, audio_path, subtitle_path, o
             cleanup.unlink(missing_ok=True)
     duration = max(1.0, float(duration_seconds or 1.0))
     stages.append({"stage": "subtitle", "subtitle_skipped_survival_mode": bool(subtitle_path and Path(subtitle_path).exists())})
-    command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "warning", "-i", str(source)]
+    command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "warning", "-stream_loop", "-1", "-i", str(source)]
     audio = Path(audio_path).expanduser().resolve() if audio_path else None
     has_audio = bool(audio and audio.is_file() and audio.stat().st_size > 0)
     if has_audio:
         command += ["-i", str(audio)]
-    command += ["-t", f"{duration:.3f}", "-vf", _scale_filter(aspect, limits.railway_max_width, limits.railway_max_height), "-r", str(limits.render_fps), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-b:v", limits.video_bitrate, "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    command += ["-t", f"{duration:.3f}", "-vf", _scale_filter(aspect, limits.railway_max_width, limits.railway_max_height), "-r", str(limits.render_fps), "-threads", "1", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-b:v", limits.video_bitrate, "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     if has_audio:
         command += ["-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", limits.audio_bitrate, "-shortest"]
     else:

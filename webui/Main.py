@@ -1097,6 +1097,31 @@ def cenara_is_safe_deliverable_mp4(path):
         return False
 
 
+def cenara_is_safe_browser_copy_mp4(path, original_path):
+    try:
+        original = Path(original_path).expanduser().resolve()
+        if not cenara_is_safe_deliverable_mp4(original):
+            return False
+        candidate = Path(path).expanduser().resolve()
+        if candidate.is_symlink() or not candidate.is_file() or candidate.suffix.lower() != ".mp4":
+            return False
+        if not candidate.name.endswith(".browser.mp4") or candidate.name.startswith(("temp-clip", "combined-")):
+            return False
+        if candidate.with_name(candidate.name.replace(".browser.mp4", ".mp4")) != original:
+            return False
+        if candidate.stat().st_size < 100 * 1024:
+            return False
+        return _is_path_inside(candidate, original.parent) and _cenara_mp4_looks_browser_safe(candidate)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def cenara_is_safe_preview_mp4(path, original_path=None):
+    if cenara_is_safe_deliverable_mp4(path):
+        return True
+    return bool(original_path and cenara_is_safe_browser_copy_mp4(path, original_path))
+
+
 def _cenara_mp4_metadata(path):
     candidate = Path(path)
     stat = candidate.stat()
@@ -1131,7 +1156,7 @@ def cenara_normalize_mp4_for_browser(path):
     if _cenara_mp4_looks_browser_safe(original):
         return original
     normalized = original.with_name(f"{original.stem}.browser.mp4")
-    if cenara_is_safe_deliverable_mp4(normalized):
+    if cenara_is_safe_browser_copy_mp4(normalized, original):
         return normalized
     ffmpeg = cenara_resolve_ffmpeg_binary()
     if not ffmpeg:
@@ -1143,7 +1168,7 @@ def cenara_normalize_mp4_for_browser(path):
     for command in commands:
         try:
             subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=180)
-            if cenara_is_safe_deliverable_mp4(normalized):
+            if cenara_is_safe_browser_copy_mp4(normalized, original):
                 return normalized
         except Exception as exc:
             logger.warning(f"Cenara browser normalization attempt failed: {type(exc).__name__}")
@@ -1257,7 +1282,7 @@ def cenara_render_active_mp4_preview(mp4_path, context="preview"):
                 cenara_update_delivery_status_for_mp4(candidate, preview_skipped_for_memory=True, safe_message="preview_skipped_for_memory")
             elif preview_clicked:
                 preview_candidate = cenara_normalize_mp4_for_browser(candidate) or candidate
-                if not cenara_is_safe_deliverable_mp4(preview_candidate):
+                if not cenara_is_safe_preview_mp4(preview_candidate, candidate):
                     raise ValueError("unsafe normalized mp4")
                 preview_meta = _cenara_mp4_metadata(preview_candidate)
                 if preview_meta["size_mb"] > cenara_runtime_limits().preview_inline_max_mb:

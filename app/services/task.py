@@ -15,7 +15,7 @@ from app.models.schema import VideoConcatMode, VideoParams
 from app.services import llm, material, subtitle, twelvelabs, video, voice, upload_post
 from app.services import state as sm
 from app.services.runtime_limits import get_runtime_limits
-from app.services.railway_render import ffprobe_validate_mp4, render_survival_mp4
+from app.services.railway_render import ffprobe_validate_mp4, normalize_survival_aspect, render_survival_mp4
 from app.utils import file_security, utils
 
 
@@ -423,8 +423,9 @@ def generate_survival_video(task_id, params, downloaded_videos, audio_file, subt
                 os.remove(output_path)
         return [], []
     sm.state.update_task(task_id, render_engine="ffmpeg_survival", render_started=True, mp4_created=False, combined_videos=[])
-    duration = min(float(audio_duration or params.video_clip_duration or 3), float(params.video_clip_duration or audio_duration or 3))
-    result = render_survival_mp4(task_id, valid_sources[0], audio_file, subtitle_path, output_path, duration, aspect=str(params.video_aspect or "9:16"))
+    duration = float(audio_duration) if audio_duration and float(audio_duration) > 0 else float(params.video_clip_duration or 3)
+    aspect = normalize_survival_aspect(params.video_aspect)
+    result = render_survival_mp4(task_id, valid_sources[0], audio_file, subtitle_path, output_path, duration, aspect=aspect)
     if not result.get("success"):
         with contextlib.suppress(FileNotFoundError):
             os.remove(part_path)
