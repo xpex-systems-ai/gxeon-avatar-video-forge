@@ -1,13 +1,12 @@
+import importlib.util
 import json
 import os.path
 import re
 from timeit import default_timer as timer
 
-try:
-    from faster_whisper import WhisperModel
-except ImportError:
-    WhisperModel = None
 from loguru import logger
+
+from app.services.runtime_limits import get_runtime_limits
 
 from app.config import config
 from app.utils import utils
@@ -18,8 +17,53 @@ compute_type = config.whisper.get("compute_type", "int8")
 model = None
 
 
+def _load_whisper_model_class():
+    if get_runtime_limits().disable_local_whisper:
+        logger.warning("local whisper disabled by runtime limits; skipping transcription")
+        return None
+    if importlib.util.find_spec("faster_whisper") is None:
+        return None
+    from faster_whisper import WhisperModel  # noqa: PLC0415
+    return WhisperModel
+
+
+def _sentences(text: str) -> list[str]:
+    parts = [p.strip() for p in re.split(r"(?<=[.!?。！？])\s+|\n+", text or "") if p.strip()]
+    if not parts and text:
+        parts = [text.strip()]
+    return parts
+
+
+def generate_estimated_srt_from_script(script_text, audio_duration, output_path):
+    result = {"ok": False, "path": "", "mode": "script_estimate", "skipped": False, "error_code": "", "message": ""}
+    try:
+        sentences = _sentences(script_text)
+        duration = max(1.0, float(audio_duration or 0))
+        if not sentences:
+            result.update(skipped=True, error_code="EMPTY_SCRIPT", message="Nenhum texto para estimar legendas.")
+            return result
+        weights = [max(1, len(sentence)) for sentence in sentences]
+        total = sum(weights)
+        cursor = 0.0
+        lines = []
+        for idx, sentence in enumerate(sentences, start=1):
+            span = duration * (weights[idx - 1] / total)
+            end = duration if idx == len(sentences) else min(duration, cursor + max(0.8, span))
+            if end <= cursor:
+                end = min(duration, cursor + 0.8)
+            lines.append(utils.text_to_srt(idx, sentence, cursor, end))
+            cursor = end
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        result.update(ok=True, path=output_path, message="Legendas estimadas a partir do roteiro.")
+    except Exception as exc:
+        result.update(skipped=True, error_code=type(exc).__name__, message="Falha não bloqueante ao estimar legendas.")
+    return result
+
+
 def create(audio_file, subtitle_file: str = ""):
     global model
+    WhisperModel = _load_whisper_model_class()
     if WhisperModel is None:
         logger.warning("faster_whisper not available, skipping whisper subtitle generation")
         return ""

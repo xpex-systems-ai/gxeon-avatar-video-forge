@@ -78,3 +78,17 @@ Use the validation flow in `docs/cenara/railway-memory-stability.md` after redep
 If Railway deploys but crashes during MoviePy/FFmpeg rendering, enable `CENARA_RENDER_ENGINE=ffmpeg_survival` with `CENARA_LOW_MEMORY_MODE=true`. This bypasses MoviePy for the final render and uses direct FFmpeg on a single provider clip to reduce peak memory.
 
 Invalid outputs must not be treated as success: 0 MB MP4 files, `temp-clip*`, `combined-*`, `.part`, and `.browser.mp4` files are intermediate or failed artifacts. Biblioteca only displays final deliverables that pass the safe MP4 checks and ffprobe validation when available.
+
+## Legendas não bloqueantes no Railway
+
+Em Railway ou `CENARA_LOW_MEMORY_MODE=true`, a Cenara não deve carregar Whisper local, Torch, Transformers nem modelos HuggingFace para transcrição. Os padrões seguros são:
+
+- `CENARA_DISABLE_LOCAL_WHISPER=true`
+- `CENARA_SUBTITLES_OPTIONAL=true`
+- `CENARA_SKIP_SUBTITLE_ON_FAILURE=true`
+- `CENARA_SUBTITLE_ENGINE=script_estimate`
+- `CENARA_GENERATION_LOCK_TTL_SECONDS=300`
+
+Quando **Ativar Legendas** estiver desligado, o backend pula a etapa de legendas. Quando estiver ligado em modo low-memory, a Cenara cria um `.srt` leve estimado a partir do roteiro e da duração do áudio. Se essa estimativa falhar, o status registra `subtitle_skipped`/`skipped_non_blocking` e o MP4 continua sendo renderizado sem legendas.
+
+A validação de sucesso continua estrita: só há sucesso quando um MP4 final, não vazio, dentro de `storage/tasks` ou `storage`, passa pelo gate seguro. Falhas de quota, rede ou provedor de legenda não devem matar a geração do MP4.

@@ -1033,6 +1033,8 @@ def cenara_validate_generation_payload(payload, uploaded_audio=None, readiness=N
         payload.video_script = cenara_build_local_script_from_brief(payload)
     if payload.video_source not in ["pexels", "pixabay", "coverr", "local"]:
         errors.append("Configure uma fonte de vídeo, uma chave de provedor ou envie uma mídia local.")
+    if payload.video_source == "local" and not getattr(payload, "video_materials", None):
+        errors.append("Envie um arquivo local ou selecione Pexels/Pixabay/Coverr.")
     if payload.video_script and payload.video_source in ["pexels", "pixabay", "coverr"] and not payload.video_terms:
         errors.append("Informe palavras-chave manuais ou preencha tema/nicho/público/promessa/CTA para a Cenara derivar termos seguros sem LLM.")
     llm_status = readiness.get("LLM", ("missing", ""))[0] if readiness else "missing"
@@ -1344,7 +1346,7 @@ def cenara_find_latest_mp4(task_id=None, limit=12):
         candidates.extend(path for path in base.rglob("*.mp4") if cenara_is_safe_deliverable_mp4(path))
     return sorted(set(candidates), key=lambda path: path.stat().st_mtime, reverse=True)[:limit]
 
-CENARA_PIPELINE_STAGES = ["queued", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_started", "mp4_created", "preview_ready", "download_ready", "mp4_created_preview_failed", "completed", "failed"]
+CENARA_PIPELINE_STAGES = ["idle", "locked", "running", "script_ready", "terms_ready", "media_ready", "audio_ready", "subtitle_skipped", "rendering", "mp4_created", "preview_ready", "download_ready", "failed"]
 
 
 def cenara_task_status_path(task_id):
@@ -1691,21 +1693,31 @@ def cenara_render_command_center(params, selected_tts_server):
             duracao = st.selectbox("Duração", [3, 4, 5, 6, 7, 8, 9, 10], key="cenara_duracao")
             fonte_video = st.selectbox("Fonte do vídeo", ["pexels", "pixabay", "coverr", "local"], index=["pexels", "pixabay", "coverr", "local"].index(params.video_source if params.video_source in ["pexels", "pixabay", "coverr", "local"] else "pexels"), key="cenara_fonte_video")
             voz_tts = st.text_input("Voz", value=params.voice_name or config.ui.get("voice_name", ""), key="cenara_voz_tts")
+            ativar_legendas = st.checkbox("Ativar Legendas", value=bool(getattr(params, "subtitle_enabled", True)), key="cenara_ativar_legendas")
             submitted = st.form_submit_button("Gerar vídeo real", use_container_width=True, type="primary")
     with middle:
-        st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>Ativas</strong></div></div></div>', unsafe_allow_html=True)
+        subtitle_label = "Ativas" if getattr(params, "subtitle_enabled", True) else "Desativadas"
+        st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>{subtitle_label}</strong></div></div></div>', unsafe_allow_html=True)
         st.info("Os controles completos de mídia, voz, música, subtítulos, transições e renderização continuam disponíveis em Controles avançados MoneyPrinterTurbo.")
     cenara_clear_stale_generation_lock(show_message=True)
     if st.session_state.pop("cenara_stale_lock_released", False):
         st.info("A geração anterior foi interrompida pelo servidor; o bloqueio foi liberado com segurança.")
     lock_status = cenara_generation_lock_status()
     if lock_status:
-        st.warning("memory_guard_active: outra geração está em andamento. Aguarde finalizar para evitar estouro de memória no Railway.")
+        created = float(lock_status.get("created_at_epoch", time.time()))
+        age = max(0, int(time.time() - created))
+        ttl = cenara_runtime_limits().generation_lock_ttl_seconds
+        freshness = "fresh" if age <= ttl else "stale"
+        st.warning(f"memory_guard_active: task_id={lock_status.get('task_id', 'unknown')} age={age}s status={freshness}. Aguarde finalizar; se ficar stale, use Limpar geração travada.")
+        if age > ttl and st.button("Limpar geração travada", key="cenara_clear_stale_lock_button"):
+            cenara_clear_stale_generation_lock(show_message=True)
+            st.rerun()
     if submitted:
         if lock_status:
             st.stop()
         form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "manual_script": roteiro_manual, "manual_keywords": palavras_chave, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
         payload = cenara_build_generation_payload(form, params)
+        payload.subtitle_enabled = bool(ativar_legendas)
         st.session_state["video_subject"] = payload.video_subject
         st.session_state["video_script"] = payload.video_script
         st.session_state["video_terms"] = payload.video_terms
