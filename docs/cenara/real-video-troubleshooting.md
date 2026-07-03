@@ -53,3 +53,14 @@ Quando um MP4 verificado aparece na Cenara, isso significa apenas que a camada d
 - **Download pronto (`download_ready`)**: o botão recebeu bytes do MP4 validado e pode entregar o arquivo ao operador. Se o preparo do download falhar, a UI mostra um aviso sem transformar a geração em falha.
 
 Para reduzir erros de frontend como `removeChild`/`NotFoundError`, a Cenara renderiza apenas **um player ativo** por padrão na área **Preview Real**. A **Biblioteca** é lazy: ela lista cards leves com data, tamanho, task de origem e status, mas não cria players de vídeo dentro dos cards. O botão **Abrir na prévia** grava a seleção segura no `session_state` e recarrega a área única de preview; o botão **Baixar MP4** usa chaves estáveis por contexto e fingerprint seguro, sem expor caminhos absolutos do servidor.
+
+### Seleção explícita da Biblioteca e status de entrega
+
+A partir da correção da PR #26, **Abrir na prévia** respeita o item escolhido na Biblioteca quando o arquivo selecionado ainda passa pelo gate seguro de MP4. A área **Preview Real** usa a seleção explícita antes de considerar o MP4 da geração atual e só usa o MP4 mais recente como fallback visual quando não há seleção segura.
+
+Os status também representam camadas diferentes:
+
+- `mp4_created=true` confirma geração: um MP4 real, não vazio e seguro existe para a tarefa.
+- `preview_ready=true` só deve aparecer depois que a camada Streamlit conseguir montar o player `st.video` sem erro.
+- `download_ready=true` só deve aparecer depois que os bytes do MP4 forem lidos e o botão de download for preparado.
+- `mp4_created_preview_failed=true` indica que o MP4 continua válido, mas o navegador não recebeu o preview inline naquele rerun. Se o download estiver pronto, a geração permanece válida e o operador deve baixar o arquivo.
