@@ -46,6 +46,10 @@ class CenaraRuntimeLimits:
     audio_bitrate: str
     video_bitrate: str
     render_engine: str
+    disable_local_whisper: bool
+    subtitles_optional: bool
+    skip_subtitle_on_failure: bool
+    subtitle_engine: str
 
     @property
     def max_remote_video_bytes(self) -> int:
@@ -81,9 +85,13 @@ def get_runtime_limits() -> CenaraRuntimeLimits:
         railway_max_height=_env_int("CENARA_RAILWAY_MAX_HEIGHT", 960 if low_memory else 1280, 240),
         prune_cache_max_mb=_env_int("CENARA_PRUNE_CACHE_MAX_MB", 300, 1),
         prune_tasks_keep=_env_int("CENARA_PRUNE_TASKS_KEEP", 8, 1),
-        generation_lock_ttl_seconds=_env_int("CENARA_GENERATION_LOCK_TTL_SECONDS", 600 if low_memory else 1800, 60),
+        generation_lock_ttl_seconds=_env_int("CENARA_GENERATION_LOCK_TTL_SECONDS", 300 if low_memory else 1800, 60),
         render_fps=_env_int("CENARA_RENDER_FPS", 12 if low_memory else 30, 1),
         audio_bitrate=os.getenv("CENARA_AUDIO_BITRATE", "64k" if low_memory else "192k").strip() or ("64k" if low_memory else "192k"),
         video_bitrate=os.getenv("CENARA_VIDEO_BITRATE", "900k" if low_memory else "2500k").strip() or ("900k" if low_memory else "2500k"),
         render_engine=os.getenv("CENARA_RENDER_ENGINE", "ffmpeg_survival" if low_memory else "moviepy").strip() or ("ffmpeg_survival" if low_memory else "moviepy"),
+        disable_local_whisper=_env_bool("CENARA_DISABLE_LOCAL_WHISPER", railway or low_memory),
+        subtitles_optional=_env_bool("CENARA_SUBTITLES_OPTIONAL", railway or low_memory),
+        skip_subtitle_on_failure=_env_bool("CENARA_SKIP_SUBTITLE_ON_FAILURE", railway or low_memory),
+        subtitle_engine=os.getenv("CENARA_SUBTITLE_ENGINE", "script_estimate" if (railway or low_memory) else "provider").strip().lower() or ("script_estimate" if (railway or low_memory) else "provider"),
     )

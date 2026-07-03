@@ -317,52 +317,51 @@ def generate_audio(task_id, params, video_script):
             return None, None, None
         return custom_audio_file, audio_duration, None
 
-def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
-    '''
-    Generate subtitle for the video script.
-    If subtitle generation is disabled or no subtitle maker is provided, it will return an empty string.
-    Otherwise, it will generate the subtitle using the specified provider.
-    Returns:
-        - subtitle_path: path to the generated subtitle file
-    '''
+def generate_subtitle(task_id, params, video_script, sub_maker, audio_file, audio_duration=None):
+    """Generate subtitles without allowing transcription failures to kill MP4 rendering."""
     logger.info("\n\n## generating subtitle")
-    if not params.subtitle_enabled:
+    limits = get_runtime_limits()
+    if not getattr(params, "subtitle_enabled", True):
+        sm.state.update_task(task_id, subtitle_status="disabled", subtitle_skipped=True, subtitle_path="")
         return ""
 
     subtitle_path = path.join(utils.task_dir(task_id), "subtitle.srt")
-    subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
-    logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
 
-    if sub_maker is None and subtitle_provider != "whisper":
-        # 自定义音频不会经过 TTS，因此没有 Edge/Azure 等 TTS 返回的
-        # sub_maker 时间轴。只有 Whisper 可以直接从音频文件转写字幕；
-        # 其他字幕提供方继续保持原有行为，避免生成错误的空时间轴。
-        logger.warning(
-            "subtitle maker is missing, skip subtitle generation for provider: "
-            f"{subtitle_provider}"
-        )
+    def skip(code: str, message: str):
+        logger.warning(f"subtitle_skipped_non_blocking: {code} {message}")
+        sm.state.update_task(task_id, subtitle_status="skipped_non_blocking", subtitle_skipped=True, subtitle_error_code=code, safe_message=message)
         return ""
 
-    subtitle_fallback = False
-    if subtitle_provider == "edge":
-        voice.create_subtitle(
-            text=video_script, sub_maker=sub_maker, subtitle_file=subtitle_path
-        )
-        if not os.path.exists(subtitle_path):
-            subtitle_fallback = True
-            logger.warning("subtitle file not found, fallback to whisper")
+    try:
+        if limits.disable_local_whisper or limits.subtitle_engine == "script_estimate":
+            result = subtitle.generate_estimated_srt_from_script(video_script, audio_duration, subtitle_path)
+            sm.state.update_task(task_id, subtitle_result=result, subtitle_status="ready" if result.get("ok") else "skipped_non_blocking")
+            return result.get("path", "") if result.get("ok") else skip(result.get("error_code", "ESTIMATE_FAILED"), result.get("message", "Legendas estimadas indisponíveis."))
 
-    if subtitle_provider == "whisper" or subtitle_fallback:
-        subtitle.create(audio_file=audio_file, subtitle_file=subtitle_path)
-        logger.info("\n\n## correcting subtitle")
-        subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
-
-    subtitle_lines = subtitle.file_to_subtitles(subtitle_path)
-    if not subtitle_lines:
-        logger.warning(f"subtitle file is invalid: {subtitle_path}")
-        return ""
-
-    return subtitle_path
+        subtitle_provider = config.app.get("subtitle_provider", "edge").strip().lower()
+        logger.info(f"\n\n## generating subtitle, provider: {subtitle_provider}")
+        if sub_maker is None and subtitle_provider != "whisper":
+            return skip("SUBTITLE_TIMELINE_MISSING", f"subtitle maker missing for provider {subtitle_provider}")
+        subtitle_fallback = False
+        if subtitle_provider == "edge":
+            voice.create_subtitle(text=video_script, sub_maker=sub_maker, subtitle_file=subtitle_path)
+            if not os.path.exists(subtitle_path):
+                subtitle_fallback = True
+                logger.warning("subtitle file not found; whisper fallback considered")
+        if subtitle_provider == "whisper" or subtitle_fallback:
+            if limits.disable_local_whisper:
+                return skip("LOCAL_WHISPER_DISABLED", "Whisper local desativado neste runtime.")
+            subtitle.create(audio_file=audio_file, subtitle_file=subtitle_path)
+            if os.path.exists(subtitle_path):
+                subtitle.correct(subtitle_file=subtitle_path, video_script=video_script)
+        if not subtitle.file_to_subtitles(subtitle_path):
+            return skip("INVALID_SUBTITLE", f"subtitle file invalid: {subtitle_path}")
+        sm.state.update_task(task_id, subtitle_status="ready", subtitle_path=subtitle_path)
+        return subtitle_path
+    except Exception as exc:
+        if limits.skip_subtitle_on_failure or limits.subtitles_optional:
+            return skip(type(exc).__name__, "Falha de legenda ignorada; renderização continuará sem legendas.")
+        raise
 
 
 def get_video_materials(task_id, params, video_terms, audio_duration):
@@ -566,7 +565,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     # 4. Generate subtitle
     subtitle_path = generate_subtitle(
-        task_id, params, video_script, sub_maker, audio_file
+        task_id, params, video_script, sub_maker, audio_file, audio_duration
     )
 
     if stop_at == "subtitle":
