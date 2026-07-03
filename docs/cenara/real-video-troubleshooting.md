@@ -72,3 +72,9 @@ Railway memory protection is handled separately from provider API readiness. In 
 If preview is skipped with `preview_skipped_for_memory`, generation still succeeded; use the guarded download flow. If download shows `download_blocked_file_too_large`, the file is valid but exceeds the configured byte-preparation cap for the current Railway instance.
 
 Use the validation flow in `docs/cenara/railway-memory-stability.md` after redeploying.
+
+## Railway survival rendering
+
+If Railway deploys but crashes during MoviePy/FFmpeg rendering, enable `CENARA_RENDER_ENGINE=ffmpeg_survival` with `CENARA_LOW_MEMORY_MODE=true`. This bypasses MoviePy for the final render and uses direct FFmpeg on a single provider clip to reduce peak memory.
+
+Invalid outputs must not be treated as success: 0 MB MP4 files, `temp-clip*`, `combined-*`, `.part`, and `.browser.mp4` files are intermediate or failed artifacts. Biblioteca only displays final deliverables that pass the safe MP4 checks and ffprobe validation when available.
