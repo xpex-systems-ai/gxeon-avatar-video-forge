@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import os.path
@@ -37,14 +38,34 @@ def cenara_is_referenced_artifact(file_path: str, referenced_files: set[str]) ->
     return os.path.realpath(file_path) in referenced_files
 
 
+def cenara_locked_generation_task_id() -> str | None:
+    lock_path = os.path.join(utils.storage_dir(create=True), "cenara_runtime", "generation.lock")
+    try:
+        with open(lock_path, "r", encoding="utf-8") as lock_file:
+            data = json.load(lock_file)
+        task_id = data.get("task_id")
+        return task_id if isinstance(task_id, str) and task_id else None
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.debug(f"Cenara prune could not read generation lock: {type(exc).__name__}")
+        return None
+
+
 def prune_cenara_storage(active_task_id: str | None = None) -> dict:
     limits = get_runtime_limits()
     report = {"deleted": 0, "kept_tasks": 0}
     storage_root = utils.storage_dir(create=True)
     cache_root = utils.storage_dir("cache_videos", create=True)
     tasks_root = utils.storage_dir("tasks", create=True)
-    active_task_state = sm.state.get_task(active_task_id) if active_task_id else None
-    referenced_files = cenara_collect_referenced_task_files(active_task_state)
+    active_task_ids = {active_task_id} if active_task_id else set()
+    locked_task_id = cenara_locked_generation_task_id()
+    if locked_task_id:
+        active_task_ids.add(locked_task_id)
+    referenced_files: set[str] = set()
+    for protected_task_id in active_task_ids:
+        protected_task_state = sm.state.get_task(protected_task_id)
+        referenced_files.update(cenara_collect_referenced_task_files(protected_task_state))
 
     def safe_remove(file_path: str):
         try:
@@ -73,10 +94,11 @@ def prune_cenara_storage(active_task_id: str | None = None) -> dict:
                 task_dirs.append((os.path.getmtime(full), name, full))
     task_dirs.sort(reverse=True)
     keep = {name for _, name, _ in task_dirs[:limits.prune_tasks_keep]}
-    if active_task_id:
-        keep.add(active_task_id)
+    keep.update(active_task_ids)
     report["kept_tasks"] = len(keep)
     for _, name, full in task_dirs:
+        if name in active_task_ids:
+            continue
         if name in keep:
             for pattern in (".part",):
                 pass

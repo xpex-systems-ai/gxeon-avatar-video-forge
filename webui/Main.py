@@ -1677,10 +1677,12 @@ def cenara_render_command_center(params, selected_tts_server):
         status_box = st.status("validando provedores", expanded=True)
         for stage in CENARA_PIPELINE_STAGES[:-2]:
             status_box.write(stage)
-        tm.prune_cenara_storage(active_task_id=task_id)
         try:
             with cenara_single_flight_generation_lock(task_id):
+                tm.prune_cenara_storage(active_task_id=task_id)
                 result = cenara_trigger_real_generation(task_id, payload, status_box=status_box)
+                if result.get("success"):
+                    tm.prune_cenara_storage(active_task_id=task_id)
         except RuntimeError:
             st.warning("memory_guard_active: geração já em execução; tentativa bloqueada com segurança.")
             st.stop()
@@ -1690,7 +1692,6 @@ def cenara_render_command_center(params, selected_tts_server):
             st.session_state["cenara_latest_mp4"] = str(output_path)
             st.session_state["cenara_latest_task_id"] = task_id
             cenara_save_project_record(task_id, payload, output_path, "completed")
-            tm.prune_cenara_storage(active_task_id=task_id)
             st.success(f"render_completed_low_memory: Vídeo real gerado com sucesso. task_id: {task_id}")
             st.caption(f"Arquivo pronto: {output_path.name}")
         else:
