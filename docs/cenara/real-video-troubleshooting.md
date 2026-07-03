@@ -43,3 +43,13 @@ Se nenhum provedor externo retornar um MP4 utilizável para a tarefa atual, a Ce
 ## Gate estrito de MP4
 
 Uma geração só é sucesso depois que a Cenara verifica que existe um `.mp4` dentro do diretório da tarefa atual, com tamanho maior que zero, e criado durante a tarefa atual. MP4s antigos não são reutilizados como sucesso da tarefa atual.
+
+## MP4 existe mas não abre no navegador
+
+Quando um MP4 verificado aparece na Cenara, isso significa apenas que a camada de **geração** criou um arquivo real e não vazio dentro do armazenamento seguro. A entrega ao usuário continua separada em duas etapas independentes:
+
+- **Sucesso de geração (`mp4_created`)**: existe um `.mp4` novo, não vazio e aprovado pelo gate seguro da tarefa atual.
+- **Falha de preview (`mp4_created_preview_failed`)**: o MP4 continua válido, mas o navegador/Streamlit não conseguiu renderizar o player inline naquele rerun. Use **Baixar MP4**; isso não apaga nem invalida o arquivo gerado.
+- **Download pronto (`download_ready`)**: o botão recebeu bytes do MP4 validado e pode entregar o arquivo ao operador. Se o preparo do download falhar, a UI mostra um aviso sem transformar a geração em falha.
+
+Para reduzir erros de frontend como `removeChild`/`NotFoundError`, a Cenara renderiza apenas **um player ativo** por padrão na área **Preview Real**. A **Biblioteca** é lazy: ela lista cards leves com data, tamanho, task de origem e status, mas não cria players de vídeo dentro dos cards. O botão **Abrir na prévia** grava a seleção segura no `session_state` e recarrega a área única de preview; o botão **Baixar MP4** usa chaves estáveis por contexto e fingerprint seguro, sem expor caminhos absolutos do servidor.
