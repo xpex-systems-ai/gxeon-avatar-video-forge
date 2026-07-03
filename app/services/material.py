@@ -1,4 +1,5 @@
 import os
+import contextlib
 import random
 import threading
 from typing import List
@@ -11,6 +12,7 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from app.config import config
 from app.models.schema import MaterialInfo, VideoAspect, VideoConcatMode
 from app.utils import utils
+from app.services.runtime_limits import get_runtime_limits
 
 # Thread-safe counter for API key rotation
 _api_key_counter = 0
@@ -90,12 +92,14 @@ def search_videos_pexels(
             # check if video has desired minimum duration
             if duration < minimum_duration:
                 continue
-            video_files = v["video_files"]
-            # loop through each url to determine the best quality
+            video_files = sorted(
+                v["video_files"],
+                key=lambda item: (int(item.get("width") or 0) * int(item.get("height") or 0), int(item.get("file_size") or 0)),
+            )
             for video in video_files:
-                w = int(video["width"])
-                h = int(video["height"])
-                if w == video_width and h == video_height:
+                w = int(video.get("width") or 0)
+                h = int(video.get("height") or 0)
+                if w >= min(video_width, 720) and h >= min(video_height, 720):
                     item = MaterialInfo()
                     item.provider = "pexels"
                     item.url = video["link"]
@@ -146,8 +150,10 @@ def search_videos_pixabay(
             if duration < minimum_duration:
                 continue
             video_files = v["videos"]
-            # loop through each url to determine the best quality
-            for video_type in video_files:
+            preferred_types = ["small", "medium", "large", "fullHD", "fullhd"] if get_runtime_limits().low_memory_mode else list(video_files.keys())
+            for video_type in preferred_types:
+                if video_type not in video_files:
+                    continue
                 video = video_files[video_type]
                 w = int(video["width"])
                 # h = int(video["height"])
@@ -241,6 +247,23 @@ def search_videos_coverr(
     return []
 
 
+def _remote_file_size(url: str, headers: dict) -> int | None:
+    try:
+        response = requests.head(
+            url,
+            headers=headers,
+            proxies=config.proxy,
+            verify=_get_tls_verify(),
+            allow_redirects=True,
+            timeout=(15, 45),
+        )
+        length = response.headers.get("Content-Length")
+        return int(length) if length and str(length).isdigit() else None
+    except Exception as exc:
+        logger.debug(f"remote asset size probe skipped: {type(exc).__name__}")
+        return None
+
+
 def save_video(video_url: str, save_dir: str = "") -> str:
     if not save_dir:
         save_dir = utils.storage_dir("cache_videos")
@@ -248,31 +271,65 @@ def save_video(video_url: str, save_dir: str = "") -> str:
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
+    limits = get_runtime_limits()
     url_without_query = video_url.split("?")[0]
     url_hash = utils.md5(url_without_query)
     video_id = f"vid-{url_hash}"
     video_path = f"{save_dir}/{video_id}.mp4"
+    part_path = f"{video_path}.part"
 
-    # if video already exists, return the path
     if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-        logger.info(f"video already exists: {video_path}")
-        return video_path
+        if os.path.getsize(video_path) <= limits.max_remote_video_bytes:
+            logger.info(f"video already exists: {video_path}")
+            return video_path
+        logger.warning("remote_asset_skipped_oversize: cached provider video exceeds memory cap")
+        with contextlib.suppress(Exception):
+            os.remove(video_path)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
 
-    # if video does not exist, download it
-    with open(video_path, "wb") as f:
-        f.write(
-            requests.get(
-                video_url,
-                headers=headers,
-                proxies=config.proxy,
-                verify=_get_tls_verify(),
-                timeout=(60, 240),
-            ).content
-        )
+    remote_size = _remote_file_size(video_url, headers)
+    if remote_size and remote_size > limits.max_remote_video_bytes:
+        logger.warning("remote_asset_skipped_oversize: provider video Content-Length exceeds cap")
+        return ""
+
+    with contextlib.suppress(Exception):
+        os.remove(part_path)
+
+    downloaded = 0
+    try:
+        with requests.get(
+            video_url,
+            headers=headers,
+            proxies=config.proxy,
+            verify=_get_tls_verify(),
+            timeout=(60, 240),
+            stream=True,
+        ) as response:
+            response.raise_for_status()
+            length = response.headers.get("Content-Length")
+            if length and length.isdigit() and int(length) > limits.max_remote_video_bytes:
+                logger.warning("remote_asset_skipped_oversize: provider video response exceeds cap")
+                return ""
+            with open(part_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    downloaded += len(chunk)
+                    if downloaded > limits.max_remote_video_bytes:
+                        logger.warning("remote_asset_skipped_oversize: provider video download exceeded cap")
+                        raise ValueError("remote video exceeds Cenara memory cap")
+                    f.write(chunk)
+        if downloaded <= 0:
+            return ""
+        os.replace(part_path, video_path)
+    except Exception as exc:
+        logger.warning(f"provider video streamed download skipped safely: {type(exc).__name__}")
+        with contextlib.suppress(Exception):
+            os.remove(part_path)
+        return ""
 
     if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
         clip = None
@@ -299,7 +356,6 @@ def save_video(video_url: str, save_dir: str = "") -> str:
                         f"failed to close video clip: {video_path}, error: {str(close_error)}"
                     )
     return ""
-
 
 def download_videos(
     task_id: str,
@@ -361,6 +417,7 @@ def download_videos(
         random.shuffle(valid_video_items)
 
     total_duration = 0.0
+    max_downloads = get_runtime_limits().max_downloads_per_task
     for item in valid_video_items:
         try:
             logger.info(f"downloading video: {item.url}")
@@ -372,6 +429,9 @@ def download_videos(
                 video_paths.append(saved_video_path)
                 seconds = min(max_clip_duration, item.duration)
                 total_duration += seconds
+                if len(video_paths) >= max_downloads:
+                    logger.info("Cenara max downloads per task reached")
+                    break
                 if total_duration > audio_duration:
                     logger.info(
                         f"total duration of downloaded videos: {total_duration} seconds, skip downloading more"
@@ -433,7 +493,8 @@ def _download_videos_by_script_order(
     video_paths = []
     total_duration = 0.0
     candidate_index = 0
-    while candidate_groups and total_duration <= audio_duration:
+    max_downloads = get_runtime_limits().max_downloads_per_task
+    while candidate_groups and total_duration <= audio_duration and len(video_paths) < max_downloads:
         has_candidate = False
         for search_term, term_items in candidate_groups:
             if candidate_index >= len(term_items):
@@ -452,6 +513,9 @@ def _download_videos_by_script_order(
                     logger.info(f"video saved: {saved_video_path}")
                     video_paths.append(saved_video_path)
                     total_duration += min(max_clip_duration, item.duration)
+                    if len(video_paths) >= max_downloads:
+                        logger.info("Cenara max downloads per task reached")
+                        break
                     if total_duration > audio_duration:
                         logger.info(
                             f"total duration of downloaded videos: {total_duration} seconds, skip downloading more"

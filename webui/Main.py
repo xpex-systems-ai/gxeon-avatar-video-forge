@@ -8,6 +8,7 @@ import re
 import hashlib
 import subprocess
 from datetime import datetime
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -33,6 +34,7 @@ from app.models.schema import (
 )
 from app.services import llm, voice
 from app.services import state as sm
+from app.services.runtime_limits import get_runtime_limits
 from app.services import task as tm
 from app.utils import utils
 
@@ -160,6 +162,102 @@ h1, h2, h3 { color: var(--cenara-text) !important; }
 </style>
 """
 st.markdown(streamlit_style, unsafe_allow_html=True)
+
+
+
+def cenara_runtime_limits():
+    return get_runtime_limits()
+
+
+def _cenara_runtime_dir() -> Path:
+    path = Path(root_dir) / "storage" / "cenara_runtime"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cenara_generation_lock_path() -> Path:
+    return _cenara_runtime_dir() / "generation.lock"
+
+
+def _cenara_remove_generation_lock_if_same(lock: Path, expected: dict) -> bool:
+    try:
+        current = json.loads(lock.read_text(encoding="utf-8"))
+        if all(current.get(key) == expected.get(key) for key in ("task_id", "owner", "created_at_epoch")):
+            lock.unlink()
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def cenara_generation_lock_status():
+    lock = _cenara_generation_lock_path()
+    if not lock.exists():
+        return None
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8"))
+        created = float(data.get("created_at_epoch", 0))
+        if time.time() - created > cenara_runtime_limits().generation_lock_ttl_seconds:
+            _cenara_remove_generation_lock_if_same(lock, data)
+            return None
+        return data
+    except Exception:
+        try:
+            if time.time() - lock.stat().st_mtime <= cenara_runtime_limits().generation_lock_ttl_seconds:
+                return {"status": "running", "task_id": "unknown"}
+            lock.unlink(missing_ok=True)
+        except Exception:
+            return {"status": "running", "task_id": "unknown"}
+        return None
+
+
+def _cenara_atomic_write_generation_lock(lock: Path, metadata: dict) -> bool:
+    fd = None
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+            fd = None
+            lock_file.write(json.dumps(metadata, ensure_ascii=False))
+            lock_file.flush()
+            os.fsync(lock_file.fileno())
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+@contextmanager
+def cenara_single_flight_generation_lock(task_id: str):
+    lock = _cenara_generation_lock_path()
+    owner = uuid4().hex
+    metadata = {
+        "task_id": task_id,
+        "owner": owner,
+        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "created_at_epoch": time.time(),
+        "status": "running",
+    }
+    acquired = _cenara_atomic_write_generation_lock(lock, metadata)
+    if not acquired:
+        current = cenara_generation_lock_status()
+        if current:
+            raise RuntimeError("CENARA_GENERATION_ALREADY_RUNNING")
+        acquired = _cenara_atomic_write_generation_lock(lock, metadata)
+        if not acquired:
+            raise RuntimeError("CENARA_GENERATION_ALREADY_RUNNING")
+    try:
+        yield
+    finally:
+        with suppress(Exception):
+            if lock.exists():
+                data = json.loads(lock.read_text(encoding="utf-8"))
+                if data.get("task_id") == task_id and data.get("owner") == owner:
+                    lock.unlink()
+        for key in list(st.session_state.keys()):
+            if key.startswith("cenara_download_bytes_"):
+                del st.session_state[key]
 
 
 def _expected_operator_token() -> str:
@@ -1094,6 +1192,13 @@ def cenara_render_mp4_download(path, context="preview", label="Baixar MP4"):
         st.warning("Download bloqueado: MP4 inválido ou fora do armazenamento seguro.")
         return False
     fingerprint = cenara_mp4_fingerprint(candidate)
+    meta = _cenara_mp4_metadata(candidate)
+    limits = cenara_runtime_limits()
+    if meta["size_mb"] > limits.download_prep_max_mb:
+        cenara_update_delivery_status_for_mp4(candidate, download_ready=False, download_blocked_for_memory=True, safe_message="download_blocked_file_too_large")
+        st.warning(f"download_blocked_file_too_large: este MP4 tem {meta['size_mb']:.2f} MB e excede o limite seguro de {limits.download_prep_max_mb} MB para preparar bytes no Railway.")
+        return False
+    key_prefix = f"cenara_download_bytes_{fingerprint}"
     try:
         video_bytes = _cenara_read_mp4_bytes(candidate)
         st.download_button(
@@ -1104,7 +1209,9 @@ def cenara_render_mp4_download(path, context="preview", label="Baixar MP4"):
             use_container_width=True,
             key=f"cenara_download_{re.sub(r'[^A-Za-z0-9_]+', '_', str(context or 'preview'))[:64]}_{fingerprint}",
         )
-        cenara_update_delivery_status_for_mp4(candidate, download_ready=True, safe_message="MP4 pronto para download.")
+        cenara_update_delivery_status_for_mp4(candidate, download_ready=True, download_blocked_for_memory=False, safe_message="download_ready")
+        if key_prefix in st.session_state:
+            del st.session_state[key_prefix]
         return True
     except Exception as exc:
         logger.warning(f"Cenara MP4 download prepare failed: {type(exc).__name__}")
@@ -1126,22 +1233,35 @@ def cenara_render_active_mp4_preview(mp4_path, context="preview"):
         st.caption(f"Arquivo: {meta['name']} · Tamanho: {meta['size_mb']:.2f} MB · Gerado em: {meta['mtime']:%d/%m/%Y %H:%M} · ID: {fingerprint}")
         preview_candidate = candidate
         preview_ready = False
+        preview_clicked = st.button("Abrir preview seguro", key=f"cenara_open_inline_preview_{fingerprint}_{context}", use_container_width=True)
         try:
-            preview_candidate = cenara_normalize_mp4_for_browser(candidate) or candidate
-            if not cenara_is_safe_deliverable_mp4(preview_candidate):
-                raise ValueError("unsafe normalized mp4")
-            preview_meta = _cenara_mp4_metadata(preview_candidate)
-            if preview_meta["size_mb"] > 150:
-                st.warning("MP4 maior que 150MB: preview inline ignorado para estabilidade do navegador. Use o download.")
-            else:
-                st.video(_cenara_read_mp4_bytes(preview_candidate), format="video/mp4")
-                preview_ready = True
-                cenara_update_delivery_status_for_mp4(candidate, preview_ready=True, mp4_created_preview_failed=False, safe_message="Preview MP4 renderizado no navegador.")
+            if meta["size_mb"] > cenara_runtime_limits().preview_inline_max_mb:
+                st.warning("preview_skipped_for_memory: MP4 maior que o limite seguro para preview inline. Use o download.")
+                cenara_update_delivery_status_for_mp4(candidate, preview_skipped_for_memory=True, safe_message="preview_skipped_for_memory")
+            elif preview_clicked:
+                preview_candidate = cenara_normalize_mp4_for_browser(candidate) or candidate
+                if not cenara_is_safe_deliverable_mp4(preview_candidate):
+                    raise ValueError("unsafe normalized mp4")
+                preview_meta = _cenara_mp4_metadata(preview_candidate)
+                if preview_meta["size_mb"] > cenara_runtime_limits().preview_inline_max_mb:
+                    st.warning("preview_skipped_for_memory: MP4 normalizado excede o limite seguro para preview inline. Use o download.")
+                    cenara_update_delivery_status_for_mp4(candidate, preview_skipped_for_memory=True, safe_message="preview_skipped_for_memory")
+                else:
+                    st.session_state["cenara_active_preview_fp"] = fingerprint
+                    preview_bytes = _cenara_read_mp4_bytes(preview_candidate)
+                    st.video(preview_bytes, format="video/mp4")
+                    del preview_bytes
+                    preview_ready = True
+                    cenara_update_delivery_status_for_mp4(candidate, preview_ready=True, mp4_created_preview_failed=False, safe_message="Preview MP4 renderizado no navegador.")
         except Exception as exc:
             logger.warning(f"Cenara MP4 preview failed: {type(exc).__name__}")
             cenara_update_delivery_status_for_mp4(candidate, preview_ready=False, mp4_created_preview_failed=True, safe_message="MP4 criado, mas o preview no navegador falhou. Use o download.")
             st.warning("MP4 criado, mas o navegador não conseguiu abrir o preview neste rerun. O arquivo permanece disponível para download.")
-        download_ready = cenara_render_mp4_download(candidate, context=context)
+        download_ready = False
+        if st.button("Preparar download seguro", key=f"cenara_prepare_active_download_{fingerprint}_{context}", use_container_width=True):
+            download_ready = cenara_render_mp4_download(candidate, context=context)
+        else:
+            st.caption("download_ready somente após clique explícito para proteger a memória do Railway.")
         if not preview_ready and download_ready:
             cenara_update_delivery_status_for_mp4(candidate, preview_ready=False, download_ready=True, mp4_created_preview_failed=True, safe_message="MP4 criado; preview falhou, mas download está pronto.")
         if preview_ready:
@@ -1362,7 +1482,7 @@ def cenara_render_real_preview(mp4_path):
     if current_task_id:
         task_status = cenara_read_task_status(current_task_id)
         if task_status:
-            safe_status = {k: task_status.get(k) for k in ["state", "failed_stage", "safe_error_code", "safe_message", "next_action", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_started", "mp4_created", "preview_ready", "download_ready", "mp4_created_preview_failed", "fallback_video_used", "provider_attempts", "ffmpeg_available"] if k in task_status}
+            safe_status = {k: task_status.get(k) for k in ["state", "failed_stage", "safe_error_code", "safe_message", "next_action", "script_ready", "terms_ready", "media_ready", "audio_ready", "render_started", "mp4_created", "preview_ready", "download_ready", "mp4_created_preview_failed", "preview_skipped_for_memory", "download_blocked_for_memory", "fallback_video_used", "provider_attempts", "ffmpeg_available"] if k in task_status}
             if task_status.get("output_path"):
                 safe_status["output_file"] = Path(task_status["output_path"]).name
             st.json(safe_status)
@@ -1411,7 +1531,7 @@ def _cenara_task_id_from_mp4(path):
 def cenara_render_recent_videos():
     st.subheader("Biblioteca")
     st.caption("Biblioteca lazy: cards leves por padrão; apenas um MP4 ativo é aberto na área de Preview Real.")
-    videos = cenara_find_latest_mp4(limit=6)
+    videos = cenara_find_latest_mp4(limit=cenara_runtime_limits().library_limit)
     if not videos:
         st.info("Nenhum vídeo real gerado ainda.")
         return
@@ -1533,7 +1653,12 @@ def cenara_render_command_center(params, selected_tts_server):
     with middle:
         st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>Ativas</strong></div></div></div>', unsafe_allow_html=True)
         st.info("Os controles completos de mídia, voz, música, subtítulos, transições e renderização continuam disponíveis em Controles avançados MoneyPrinterTurbo.")
+    lock_status = cenara_generation_lock_status()
+    if lock_status:
+        st.warning("memory_guard_active: outra geração está em andamento. Aguarde finalizar para evitar estouro de memória no Railway.")
     if submitted:
+        if lock_status:
+            st.stop()
         form = {"tema": tema, "publico": publico, "promessa": promessa, "nicho": nicho, "cta": cta, "manual_script": roteiro_manual, "manual_keywords": palavras_chave, "roteiro_manual": roteiro_manual, "palavras_chave": palavras_chave, "formato": formato, "duracao": duracao, "fonte_video": fonte_video, "voz_tts": voz_tts}
         payload = cenara_build_generation_payload(form, params)
         st.session_state["video_subject"] = payload.video_subject
@@ -1552,14 +1677,22 @@ def cenara_render_command_center(params, selected_tts_server):
         status_box = st.status("validando provedores", expanded=True)
         for stage in CENARA_PIPELINE_STAGES[:-2]:
             status_box.write(stage)
-        result = cenara_trigger_real_generation(task_id, payload, status_box=status_box)
+        try:
+            with cenara_single_flight_generation_lock(task_id):
+                tm.prune_cenara_storage(active_task_id=task_id)
+                result = cenara_trigger_real_generation(task_id, payload, status_box=status_box)
+                if result.get("success"):
+                    tm.prune_cenara_storage(active_task_id=task_id)
+        except RuntimeError:
+            st.warning("memory_guard_active: geração já em execução; tentativa bloqueada com segurança.")
+            st.stop()
         if result["success"]:
             output_path = Path(result["output_path"])
             status_box.update(label="finalizado", state="complete")
             st.session_state["cenara_latest_mp4"] = str(output_path)
             st.session_state["cenara_latest_task_id"] = task_id
             cenara_save_project_record(task_id, payload, output_path, "completed")
-            st.success(f"Vídeo real gerado com sucesso. task_id: {task_id}")
+            st.success(f"render_completed_low_memory: Vídeo real gerado com sucesso. task_id: {task_id}")
             st.caption(f"Arquivo pronto: {output_path.name}")
         else:
             status_box.write("falhou")

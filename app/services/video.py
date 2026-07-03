@@ -37,6 +37,7 @@ from app.models.schema import (
 )
 from app.services.utils import video_effects
 from app.utils import file_security, utils
+from app.services.runtime_limits import get_runtime_limits
 
 class SubClippedVideoClip:
     def __init__(
@@ -84,6 +85,46 @@ _SUPPORTED_VIDEO_CODECS = (
     "h264_videotoolbox",
 )
 _runtime_disabled_video_codecs = set()
+
+
+def _effective_render_size(video_aspect: VideoAspect) -> tuple[int, int]:
+    aspect = VideoAspect(video_aspect)
+    width, height = aspect.to_resolution()
+    limits = get_runtime_limits()
+    if not limits.low_memory_mode:
+        return width, height
+    if width == height:
+        cap = min(720, limits.railway_max_width, limits.railway_max_height)
+        return cap, cap
+    if height > width:
+        return min(width, limits.railway_max_width), min(height, limits.railway_max_height)
+    return min(width, limits.railway_max_height), min(height, limits.railway_max_width)
+
+
+def _effective_fps() -> int:
+    return get_runtime_limits().render_fps
+
+
+def _effective_threads(configured: int | None = None) -> int:
+    limits = get_runtime_limits()
+    return limits.render_threads if limits.low_memory_mode else (configured or limits.render_threads)
+
+
+def _effective_audio_bitrate() -> str:
+    return get_runtime_limits().audio_bitrate
+
+
+def _cleanup_render_artifacts(output_dir: str, keep_final: bool = True, protected_paths: list[str] | None = None):
+    protected = {os.path.realpath(path) for path in protected_paths or [] if path}
+    for pattern in ("temp-clip-*.mp4", "combined-*.mp4"):
+        for file_path in glob.glob(os.path.join(output_dir, pattern)):
+            try:
+                if os.path.realpath(file_path) in protected:
+                    continue
+                os.remove(file_path)
+            except Exception as exc:
+                logger.debug(f"failed to cleanup render artifact: {type(exc).__name__}")
+    gc.collect()
 
 
 def _get_required_video_duration(audio_duration: float) -> float:
@@ -562,7 +603,7 @@ def combine_videos(
     output_dir = os.path.dirname(combined_video_path)
 
     aspect = VideoAspect(video_aspect)
-    video_width, video_height = aspect.to_resolution()
+    video_width, video_height = _effective_render_size(aspect)
 
     processed_clips = []
     subclipped_items = []
@@ -674,7 +715,7 @@ def combine_videos(
                 clip_file,
                 codec=_get_configured_video_codec(),
                 logger=None,
-                fps=fps,
+                fps=_effective_fps(),
             )
 
             # Store clip duration before closing
@@ -901,7 +942,7 @@ def generate_video(
     params: VideoParams,
 ):
     aspect = VideoAspect(params.video_aspect)
-    video_width, video_height = aspect.to_resolution()
+    video_width, video_height = _effective_render_size(aspect)
 
     logger.info(f"generating video: {video_width} x {video_height}")
     logger.info(f"  ① video: {video_path}")
@@ -1125,14 +1166,18 @@ def generate_video(
         codec=_get_configured_video_codec(),
         audio_codec=audio_codec,
         audio_fps=output_audio_fps,
-        audio_bitrate=audio_bitrate,
+        audio_bitrate=_effective_audio_bitrate(),
         temp_audiofile_path=_get_temp_audio_dir(output_dir),
-        threads=params.n_threads or 2,
+        threads=_effective_threads(params.n_threads),
         logger=None,
-        fps=fps,
+        fps=_effective_fps(),
     )
-    video_clip.close()
+    close_clip(video_clip)
+    close_clip(audio_clip)
+    if 'bgm_clip' in locals():
+        close_clip(bgm_clip)
     del video_clip
+    gc.collect()
 
 
 def preprocess_video(materials: List[MaterialInfo], clip_duration=4):
@@ -1216,7 +1261,7 @@ def preprocess_video(materials: List[MaterialInfo], clip_duration=4):
 
                 # Output the video to a file.
                 video_file = f"{material_source_path}.mp4"
-                final_clip.write_videofile(video_file, fps=30, logger=None)
+                final_clip.write_videofile(video_file, fps=_effective_fps(), logger=None)
                 close_clip(clip)
                 close_clip(final_clip)
                 material.url = video_file

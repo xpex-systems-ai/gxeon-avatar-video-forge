@@ -1,5 +1,8 @@
+import json
 import math
+import os
 import os.path
+import shutil
 import re
 from os import path
 
@@ -10,8 +13,110 @@ from app.models import const
 from app.models.schema import VideoConcatMode, VideoParams
 from app.services import llm, material, subtitle, twelvelabs, video, voice, upload_post
 from app.services import state as sm
+from app.services.runtime_limits import get_runtime_limits
 from app.utils import file_security, utils
 
+
+
+def cenara_collect_referenced_task_files(task_state: dict | None) -> set[str]:
+    referenced: set[str] = set()
+    if not isinstance(task_state, dict):
+        return referenced
+    for key in ("videos", "combined_videos", "output_path", "preview_path", "browser_preview_path", "download_path"):
+        value = task_state.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, str) and item:
+                referenced.add(os.path.realpath(item))
+                if item.endswith(".mp4"):
+                    root, ext = os.path.splitext(item)
+                    referenced.add(os.path.realpath(f"{root}.browser{ext}"))
+    return referenced
+
+
+def cenara_is_referenced_artifact(file_path: str, referenced_files: set[str]) -> bool:
+    return os.path.realpath(file_path) in referenced_files
+
+
+def cenara_locked_generation_task_id() -> str | None:
+    lock_path = os.path.join(utils.storage_dir(create=True), "cenara_runtime", "generation.lock")
+    try:
+        with open(lock_path, "r", encoding="utf-8") as lock_file:
+            data = json.load(lock_file)
+        task_id = data.get("task_id")
+        return task_id if isinstance(task_id, str) and task_id else None
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        logger.debug(f"Cenara prune could not read generation lock: {type(exc).__name__}")
+        return None
+
+
+def prune_cenara_storage(active_task_id: str | None = None) -> dict:
+    limits = get_runtime_limits()
+    report = {"deleted": 0, "kept_tasks": 0}
+    storage_root = utils.storage_dir(create=True)
+    cache_root = utils.storage_dir("cache_videos", create=True)
+    tasks_root = utils.storage_dir("tasks", create=True)
+    active_task_ids = {active_task_id} if active_task_id else set()
+    locked_task_id = cenara_locked_generation_task_id()
+    if locked_task_id:
+        active_task_ids.add(locked_task_id)
+    referenced_files: set[str] = set()
+    for protected_task_id in active_task_ids:
+        protected_task_state = sm.state.get_task(protected_task_id)
+        referenced_files.update(cenara_collect_referenced_task_files(protected_task_state))
+
+    def safe_remove(file_path: str):
+        try:
+            real = os.path.realpath(file_path)
+            if not real.startswith(os.path.realpath(storage_root)):
+                return
+            os.remove(real)
+            report["deleted"] += 1
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug(f"Cenara prune skipped file: {type(exc).__name__}")
+
+    for root, _, files in os.walk(cache_root):
+        for name in files:
+            file_path = os.path.join(root, name)
+            size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            if name.endswith(".part") or size == 0 or (name.endswith(".mp4") and size > limits.max_remote_video_bytes):
+                safe_remove(file_path)
+
+    task_dirs = []
+    if os.path.isdir(tasks_root):
+        for name in os.listdir(tasks_root):
+            full = os.path.join(tasks_root, name)
+            if os.path.isdir(full):
+                task_dirs.append((os.path.getmtime(full), name, full))
+    task_dirs.sort(reverse=True)
+    keep = {name for _, name, _ in task_dirs[:limits.prune_tasks_keep]}
+    keep.update(active_task_ids)
+    report["kept_tasks"] = len(keep)
+    for _, name, full in task_dirs:
+        if name in active_task_ids:
+            continue
+        if name in keep:
+            for pattern in (".part",):
+                pass
+            for root, _, files in os.walk(full):
+                for file_name in files:
+                    f = os.path.join(root, file_name)
+                    if cenara_is_referenced_artifact(f, referenced_files):
+                        continue
+                    if file_name.endswith(".part") or file_name.startswith("temp-clip-") or file_name.startswith("combined-") or (file_name.endswith(".mp4") and os.path.getsize(f) == 0):
+                        safe_remove(f)
+            continue
+        try:
+            shutil.rmtree(full)
+            report["deleted"] += 1
+        except Exception as exc:
+            logger.debug(f"Cenara prune skipped task dir: {type(exc).__name__}")
+    logger.info(f"Cenara storage prune report: deleted={report['deleted']} kept_tasks={report['kept_tasks']}")
+    return report
 
 def derive_safe_video_terms(*texts, limit: int = 6):
     stop_words = {"para", "com", "uma", "que", "seu", "sua", "dos", "das", "por", "the", "and", "you", "your", "with"}
@@ -301,6 +406,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
 def generate_final_videos(
     task_id, params, downloaded_videos, audio_file, subtitle_path
 ):
+    get_runtime_limits()
     final_video_paths = []
     combined_video_paths = []
     # 多视频生成默认会打散素材以增加差异；但“按文案顺序匹配素材”追求的是
@@ -328,7 +434,7 @@ def generate_final_videos(
             video_concat_mode=video_concat_mode,
             video_transition_mode=video_transition_mode,
             max_clip_duration=params.video_clip_duration,
-            threads=params.n_threads,
+            threads=get_runtime_limits().render_threads if get_runtime_limits().low_memory_mode else params.n_threads,
         )
 
         _progress += 50 / params.video_count / 2
@@ -348,14 +454,22 @@ def generate_final_videos(
         _progress += 50 / params.video_count / 2
         sm.state.update_task(task_id, progress=_progress)
 
+        if os.path.getsize(final_video_path) > get_runtime_limits().max_output_mp4_bytes:
+            logger.warning("download_blocked_for_memory: generated MP4 exceeds configured output cap")
         final_video_paths.append(final_video_path)
         combined_video_paths.append(combined_video_path)
 
-    return final_video_paths, combined_video_paths
+    protected_paths = final_video_paths + combined_video_paths
+    video._cleanup_render_artifacts(utils.task_dir(task_id), protected_paths=protected_paths)
+    existing_combined_video_paths = [path for path in combined_video_paths if os.path.exists(path)]
+    return final_video_paths, existing_combined_video_paths
 
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
+    if get_runtime_limits().low_memory_mode:
+        params.n_threads = get_runtime_limits().render_threads
+    prune_cenara_storage(active_task_id=task_id)
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
 
     # 1. Generate script

@@ -197,9 +197,14 @@ def get_task(
                 for v in task["videos"]
             ]
         if "combined_videos" in task:
+            combined_values = task["combined_videos"] if isinstance(task["combined_videos"], list) else [task["combined_videos"]]
+            existing_combined_videos = [
+                v for v in combined_values
+                if isinstance(v, str) and os.path.exists(v)
+            ]
             response_task["combined_videos"] = [
                 _task_file_to_uri(v, endpoint, task_dir, request_id)
-                for v in task["combined_videos"]
+                for v in existing_combined_videos
             ]
         return utils.get_response(200, response_task)
 
