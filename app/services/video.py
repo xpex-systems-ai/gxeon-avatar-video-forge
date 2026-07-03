@@ -114,10 +114,13 @@ def _effective_audio_bitrate() -> str:
     return get_runtime_limits().audio_bitrate
 
 
-def _cleanup_render_artifacts(output_dir: str, keep_final: bool = True):
+def _cleanup_render_artifacts(output_dir: str, keep_final: bool = True, protected_paths: list[str] | None = None):
+    protected = {os.path.realpath(path) for path in protected_paths or [] if path}
     for pattern in ("temp-clip-*.mp4", "combined-*.mp4"):
         for file_path in glob.glob(os.path.join(output_dir, pattern)):
             try:
+                if os.path.realpath(file_path) in protected:
+                    continue
                 os.remove(file_path)
             except Exception as exc:
                 logger.debug(f"failed to cleanup render artifact: {type(exc).__name__}")

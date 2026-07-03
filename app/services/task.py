@@ -17,12 +17,34 @@ from app.utils import file_security, utils
 
 
 
+def cenara_collect_referenced_task_files(task_state: dict | None) -> set[str]:
+    referenced: set[str] = set()
+    if not isinstance(task_state, dict):
+        return referenced
+    for key in ("videos", "combined_videos", "output_path", "preview_path", "browser_preview_path", "download_path"):
+        value = task_state.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, str) and item:
+                referenced.add(os.path.realpath(item))
+                if item.endswith(".mp4"):
+                    root, ext = os.path.splitext(item)
+                    referenced.add(os.path.realpath(f"{root}.browser{ext}"))
+    return referenced
+
+
+def cenara_is_referenced_artifact(file_path: str, referenced_files: set[str]) -> bool:
+    return os.path.realpath(file_path) in referenced_files
+
+
 def prune_cenara_storage(active_task_id: str | None = None) -> dict:
     limits = get_runtime_limits()
     report = {"deleted": 0, "kept_tasks": 0}
     storage_root = utils.storage_dir(create=True)
     cache_root = utils.storage_dir("cache_videos", create=True)
     tasks_root = utils.storage_dir("tasks", create=True)
+    active_task_state = sm.state.get_task(active_task_id) if active_task_id else None
+    referenced_files = cenara_collect_referenced_task_files(active_task_state)
 
     def safe_remove(file_path: str):
         try:
@@ -61,6 +83,8 @@ def prune_cenara_storage(active_task_id: str | None = None) -> dict:
             for root, _, files in os.walk(full):
                 for file_name in files:
                     f = os.path.join(root, file_name)
+                    if cenara_is_referenced_artifact(f, referenced_files):
+                        continue
                     if file_name.endswith(".part") or file_name.startswith("temp-clip-") or file_name.startswith("combined-") or (file_name.endswith(".mp4") and os.path.getsize(f) == 0):
                         safe_remove(f)
             continue
@@ -413,11 +437,10 @@ def generate_final_videos(
         final_video_paths.append(final_video_path)
         combined_video_paths.append(combined_video_path)
 
-    video._cleanup_render_artifacts(utils.task_dir(task_id))
-    # combined-*.mp4 files are removed by low-memory cleanup, so do not expose
-    # stale combined_videos URLs in task state/API responses. Final MP4 paths
-    # remain intact and are returned via videos.
-    return final_video_paths, []
+    protected_paths = final_video_paths + combined_video_paths
+    video._cleanup_render_artifacts(utils.task_dir(task_id), protected_paths=protected_paths)
+    existing_combined_video_paths = [path for path in combined_video_paths if os.path.exists(path)]
+    return final_video_paths, existing_combined_video_paths
 
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
