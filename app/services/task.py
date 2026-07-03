@@ -4,6 +4,7 @@ import os
 import os.path
 import shutil
 import re
+import contextlib
 from os import path
 
 from loguru import logger
@@ -14,6 +15,7 @@ from app.models.schema import VideoConcatMode, VideoParams
 from app.services import llm, material, subtitle, twelvelabs, video, voice, upload_post
 from app.services import state as sm
 from app.services.runtime_limits import get_runtime_limits
+from app.services.railway_render import ffprobe_validate_mp4, render_survival_mp4
 from app.utils import file_security, utils
 
 
@@ -403,6 +405,44 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
         return downloaded_videos
 
 
+def _cenara_use_survival_renderer() -> bool:
+    limits = get_runtime_limits()
+    return limits.low_memory_mode or limits.render_engine == "ffmpeg_survival"
+
+
+def generate_survival_video(task_id, params, downloaded_videos, audio_file, subtitle_path, audio_duration):
+    valid_sources = [video_path for video_path in downloaded_videos or [] if isinstance(video_path, str) and os.path.isfile(video_path) and os.path.getsize(video_path) > 0]
+    output_path = path.join(utils.task_dir(task_id), f"cenara-final-{task_id}.mp4")
+    part_path = f"{output_path}.part"
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(part_path)
+    if not valid_sources:
+        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED, render_engine="ffmpeg_survival", render_started=True, mp4_created=False, safe_error_code="NO_PROVIDER_VIDEO")
+        with contextlib.suppress(FileNotFoundError):
+            if os.path.exists(output_path) and os.path.getsize(output_path) == 0:
+                os.remove(output_path)
+        return [], []
+    sm.state.update_task(task_id, render_engine="ffmpeg_survival", render_started=True, mp4_created=False, combined_videos=[])
+    duration = min(float(audio_duration or params.video_clip_duration or 3), float(params.video_clip_duration or audio_duration or 3))
+    result = render_survival_mp4(task_id, valid_sources[0], audio_file, subtitle_path, output_path, duration, aspect=str(params.video_aspect or "9:16"))
+    if not result.get("success"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(part_path)
+        if os.path.exists(output_path) and os.path.getsize(output_path) == 0:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(output_path)
+        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED, render_engine="ffmpeg_survival", render_started=True, mp4_created=False, safe_error_code=result.get("safe_error_code", "SURVIVAL_RENDER_FAILED"), safe_message=result.get("safe_message", "Render survival falhou."))
+        return [], []
+    validation = ffprobe_validate_mp4(output_path)
+    if not validation.get("valid"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(output_path)
+        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED, render_engine="ffmpeg_survival", render_started=True, mp4_created=False, safe_error_code=validation.get("reason", "INVALID_FINAL_MP4"))
+        return [], []
+    sm.state.update_task(task_id, render_engine="ffmpeg_survival", render_started=True, mp4_created=True, output_path=output_path, survival_render=result)
+    return [output_path], []
+
+
 def generate_final_videos(
     task_id, params, downloaded_videos, audio_file, subtitle_path
 ):
@@ -564,9 +604,14 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         params.video_concat_mode = VideoConcatMode(params.video_concat_mode)
 
     # 6. Generate final videos
-    final_video_paths, combined_video_paths = generate_final_videos(
-        task_id, params, downloaded_videos, audio_file, subtitle_path
-    )
+    if _cenara_use_survival_renderer():
+        final_video_paths, combined_video_paths = generate_survival_video(
+            task_id, params, downloaded_videos, audio_file, subtitle_path, audio_duration
+        )
+    else:
+        final_video_paths, combined_video_paths = generate_final_videos(
+            task_id, params, downloaded_videos, audio_file, subtitle_path
+        )
 
     if not final_video_paths:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -612,7 +657,9 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     kwargs = {
         "videos": final_video_paths,
-        "combined_videos": combined_video_paths,
+        **({} if _cenara_use_survival_renderer() else {"combined_videos": combined_video_paths}),
+        "render_engine": "ffmpeg_survival" if _cenara_use_survival_renderer() else "moviepy",
+        "mp4_created": True,
         "script": video_script,
         "terms": video_terms,
         "audio_file": audio_file,

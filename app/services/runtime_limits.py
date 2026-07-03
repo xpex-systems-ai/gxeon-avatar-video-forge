@@ -44,6 +44,8 @@ class CenaraRuntimeLimits:
     generation_lock_ttl_seconds: int
     render_fps: int
     audio_bitrate: str
+    video_bitrate: str
+    render_engine: str
 
     @property
     def max_remote_video_bytes(self) -> int:
@@ -69,17 +71,19 @@ def get_runtime_limits() -> CenaraRuntimeLimits:
     return CenaraRuntimeLimits(
         low_memory_mode=low_memory,
         max_remote_video_mb=_env_int("CENARA_MAX_REMOTE_VIDEO_MB", 24 if low_memory else 96, 1),
-        max_output_mp4_mb=_env_int("CENARA_MAX_OUTPUT_MP4_MB", 90 if low_memory else 300, 1),
-        preview_inline_max_mb=_env_int("CENARA_PREVIEW_INLINE_MAX_MB", 24 if low_memory else 150, 1),
-        download_prep_max_mb=_env_int("CENARA_DOWNLOAD_PREP_MAX_MB", 90 if low_memory else 300, 1),
+        max_output_mp4_mb=_env_int("CENARA_MAX_OUTPUT_MP4_MB", 45 if low_memory else 300, 1),
+        preview_inline_max_mb=_env_int("CENARA_PREVIEW_INLINE_MAX_MB", 12 if low_memory else 150, 1),
+        download_prep_max_mb=_env_int("CENARA_DOWNLOAD_PREP_MAX_MB", 45 if low_memory else 300, 1),
         library_limit=_env_int("CENARA_LIBRARY_LIMIT", 5 if low_memory else 12, 1),
-        max_downloads_per_task=_env_int("CENARA_MAX_DOWNLOADS_PER_TASK", 3 if low_memory else 8, 1),
+        max_downloads_per_task=_env_int("CENARA_MAX_DOWNLOADS_PER_TASK", 1 if low_memory else 8, 1),
         render_threads=_env_int("CENARA_RENDER_THREADS", 1 if low_memory else 2, 1),
-        railway_max_width=_env_int("CENARA_RAILWAY_MAX_WIDTH", 720, 240),
-        railway_max_height=_env_int("CENARA_RAILWAY_MAX_HEIGHT", 1280, 240),
+        railway_max_width=_env_int("CENARA_RAILWAY_MAX_WIDTH", 540 if low_memory else 720, 240),
+        railway_max_height=_env_int("CENARA_RAILWAY_MAX_HEIGHT", 960 if low_memory else 1280, 240),
         prune_cache_max_mb=_env_int("CENARA_PRUNE_CACHE_MAX_MB", 300, 1),
         prune_tasks_keep=_env_int("CENARA_PRUNE_TASKS_KEEP", 8, 1),
-        generation_lock_ttl_seconds=_env_int("CENARA_GENERATION_LOCK_TTL_SECONDS", 1800, 60),
-        render_fps=_env_int("CENARA_RENDER_FPS", 24 if low_memory else 30, 12),
-        audio_bitrate=os.getenv("CENARA_AUDIO_BITRATE", "96k" if low_memory else "192k").strip() or ("96k" if low_memory else "192k"),
+        generation_lock_ttl_seconds=_env_int("CENARA_GENERATION_LOCK_TTL_SECONDS", 600 if low_memory else 1800, 60),
+        render_fps=_env_int("CENARA_RENDER_FPS", 12 if low_memory else 30, 1),
+        audio_bitrate=os.getenv("CENARA_AUDIO_BITRATE", "64k" if low_memory else "192k").strip() or ("64k" if low_memory else "192k"),
+        video_bitrate=os.getenv("CENARA_VIDEO_BITRATE", "900k" if low_memory else "2500k").strip() or ("900k" if low_memory else "2500k"),
+        render_engine=os.getenv("CENARA_RENDER_ENGINE", "ffmpeg_survival" if low_memory else "moviepy").strip() or ("ffmpeg_survival" if low_memory else "moviepy"),
     )

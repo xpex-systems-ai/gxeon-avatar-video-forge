@@ -35,6 +35,7 @@ from app.models.schema import (
 from app.services import llm, voice
 from app.services import state as sm
 from app.services.runtime_limits import get_runtime_limits
+from app.services.railway_render import ffprobe_validate_mp4
 from app.services import task as tm
 from app.utils import utils
 
@@ -188,6 +189,16 @@ def _cenara_remove_generation_lock_if_same(lock: Path, expected: dict) -> bool:
     except Exception:
         return False
     return False
+
+
+def cenara_clear_stale_generation_lock(show_message=False):
+    lock = _cenara_generation_lock_path()
+    existed = lock.exists()
+    status = cenara_generation_lock_status()
+    released = existed and status is None and not lock.exists()
+    if released and show_message:
+        st.session_state["cenara_stale_lock_released"] = True
+    return released
 
 
 def cenara_generation_lock_status():
@@ -1072,7 +1083,13 @@ def cenara_is_safe_deliverable_mp4(path):
         tasks = _storage_tasks_root().resolve()
         if not candidate.is_file() or candidate.suffix.lower() != ".mp4":
             return False
-        if candidate.stat().st_size <= 0:
+        name = candidate.name.lower()
+        if name.startswith(("temp-clip", "combined-")) or name.endswith(".browser.mp4") or name.endswith(".part"):
+            return False
+        if candidate.stat().st_size < 100 * 1024:
+            return False
+        validation = ffprobe_validate_mp4(candidate)
+        if not validation.get("valid"):
             return False
         # Resolve before checking roots so symlinks cannot escape storage/.
         return _is_path_inside(candidate, tasks) or _is_path_inside(candidate, storage)
@@ -1550,7 +1567,7 @@ def cenara_render_recent_videos():
             cols[1].metric("Tamanho", f"{meta['size_mb']:.2f} MB")
             cols[2].metric("Duração", "verificada")
             cols[3].metric("Task", task_id or "biblioteca")
-            st.success("Status: MP4 verificado")
+            st.success("Status: MP4 final verificado")
             action_cols = st.columns([1, 1, 1])
             if action_cols[0].button("Abrir na prévia", key=f"cenara_open_preview_{context}", use_container_width=True):
                 st.session_state["cenara_active_library_mp4"] = str(path)
@@ -1653,6 +1670,9 @@ def cenara_render_command_center(params, selected_tts_server):
     with middle:
         st.markdown(f'<div class="cenara-workspace-card"><div class="cenara-card-kicker">02 · Build Engine</div><h3>Mídia, voz e estilo</h3><p class="cenara-card-copy">Use Pexels, Pixabay, Coverr ou mídia local; ajuste TTS, áudio, formato e legendas nos controles avançados abaixo.</p><div class="cenara-timeline"><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Fonte de mídia</span><strong>{params.video_source or "auto"}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Voz</span><strong>{config.ui.get("tts_server", "azure")}</strong></div><div class="cenara-timeline-row"><span><span class="cenara-status-dot"></span>Legendas</span><strong>Ativas</strong></div></div></div>', unsafe_allow_html=True)
         st.info("Os controles completos de mídia, voz, música, subtítulos, transições e renderização continuam disponíveis em Controles avançados MoneyPrinterTurbo.")
+    cenara_clear_stale_generation_lock(show_message=True)
+    if st.session_state.pop("cenara_stale_lock_released", False):
+        st.info("A geração anterior foi interrompida pelo servidor; o bloqueio foi liberado com segurança.")
     lock_status = cenara_generation_lock_status()
     if lock_status:
         st.warning("memory_guard_active: outra geração está em andamento. Aguarde finalizar para evitar estouro de memória no Railway.")
