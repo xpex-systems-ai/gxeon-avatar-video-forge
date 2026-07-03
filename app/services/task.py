@@ -414,7 +414,10 @@ def generate_final_videos(
         combined_video_paths.append(combined_video_path)
 
     video._cleanup_render_artifacts(utils.task_dir(task_id))
-    return final_video_paths, combined_video_paths
+    # combined-*.mp4 files are removed by low-memory cleanup, so do not expose
+    # stale combined_videos URLs in task state/API responses. Final MP4 paths
+    # remain intact and are returned via videos.
+    return final_video_paths, []
 
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
