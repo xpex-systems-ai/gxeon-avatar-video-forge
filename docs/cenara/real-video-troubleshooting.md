@@ -64,3 +64,11 @@ Os status também representam camadas diferentes:
 - `preview_ready=true` só deve aparecer depois que a camada Streamlit conseguir montar o player `st.video` sem erro.
 - `download_ready=true` só deve aparecer depois que os bytes do MP4 forem lidos e o botão de download for preparado.
 - `mp4_created_preview_failed=true` indica que o MP4 continua válido, mas o navegador não recebeu o preview inline naquele rerun. Se o download estiver pronto, a geração permanece válida e o operador deve baixar o arquivo.
+
+## Railway low-memory governor
+
+Railway memory protection is handled separately from provider API readiness. In low-memory mode, Cenara streams provider videos with size caps, limits downloads per task, renders at a capped resolution/FPS/thread count, and keeps Biblioteca metadata-first so page refreshes do not load every MP4 into Streamlit memory.
+
+If preview is skipped with `preview_skipped_for_memory`, generation still succeeded; use the guarded download flow. If download shows `download_blocked_file_too_large`, the file is valid but exceeds the configured byte-preparation cap for the current Railway instance.
+
+Use the validation flow in `docs/cenara/railway-memory-stability.md` after redeploying.
